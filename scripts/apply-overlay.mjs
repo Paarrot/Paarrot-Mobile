@@ -14,7 +14,7 @@
  * the Capacitor / Android platform changes on top of it.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, statSync, existsSync, unlinkSync } from 'fs';
 import { join, dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -23,6 +23,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const CINNY = join(ROOT, 'cinny');
 const OVERLAY = join(ROOT, 'overlay');
+const STASH_FLAG = join(ROOT, '.cinny-stash-pending');
+
+// Stash any pre-existing cinny changes so the overlay applies cleanly.
+// The restore-cinny script will pop them back afterwards.
+const cinnyStatus = execSync('git status --porcelain', { cwd: CINNY, encoding: 'utf8' });
+if (cinnyStatus.trim()) {
+  console.log('[apply-overlay] Stashing pre-existing cinny changes...');
+  execSync('git stash push -u -m "pre-overlay stash"', { cwd: CINNY, stdio: 'inherit' });
+  writeFileSync(STASH_FLAG, '1', 'utf8');
+  console.log('[apply-overlay] Stash saved.');
+} else {
+  // Ensure no stale flag from a previous interrupted run
+  if (existsSync(STASH_FLAG)) unlinkSync(STASH_FLAG);
+}
 
 /**
  * Recursively copy all files from src directory to dest directory.
