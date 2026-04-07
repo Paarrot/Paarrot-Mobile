@@ -120,7 +120,23 @@ if (!existsSync(androidJunction)) {
   console.log(`  android/ link already exists, skipping`);
 }
 
-// 7. Write android/local.properties with the current machine's Android SDK path
+// 8. Sync version from root package.json into android/app/build.gradle
+console.log('[apply-overlay] Syncing version into build.gradle...');
+const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const version = rootPkg.version ?? '1.0.0';
+const parts = version.split('.').map(Number);
+// versionCode: major*10000 + minor*100 + patch  (e.g. 4.11.78 -> 41178)
+const versionCode = (parts[0] ?? 0) * 10000 + (parts[1] ?? 0) * 100 + (parts[2] ?? 0);
+
+const buildGradlePath = join(androidTarget, 'app', 'build.gradle');
+let buildGradle = readFileSync(buildGradlePath, 'utf8');
+buildGradle = buildGradle
+  .replace(/versionCode\s+\d+/, `versionCode ${versionCode}`)
+  .replace(/versionName\s+"[^"]+"/, `versionName "${version}"`);
+writeFileSync(buildGradlePath, buildGradle, 'utf8');
+console.log(`  versionName "${version}", versionCode ${versionCode}`);
+
+// 9. Write android/local.properties with the current machine's Android SDK path
 const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 if (androidHome) {
   console.log('[apply-overlay] Writing android/local.properties...');
