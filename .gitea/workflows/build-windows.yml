@@ -1,0 +1,365 @@
+name: Build Paarrot Windows
+
+on:
+  push:
+    branches: [ main, development ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  start-vm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Check if VM is already running
+        id: check-vm
+        run: |
+          if pgrep -f "qemu-system-x86_64.*windows.qcow2" > /dev/null; then
+            echo "VM is already running"
+            echo "vm_running=true" >> $GITHUB_OUTPUT
+          else
+            echo "VM is not running"
+            echo "vm_running=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Start Windows VM with retry
+        run: |
+          MAX_RETRIES=3
+          RETRY_COUNT=0
+          BOOT_WAIT=90
+          RUNNER_CHECK_TIMEOUT=120
+          
+          start_vm() {
+            echo "Starting Windows QEMU VM (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+            sudo -u litruv setsid bash -c 'DISPLAY=:0 XAUTHORITY=/home/litruv/.Xauthority qemu-system-x86_64 \
+              -m 18G \
+              -smp 4 \
+              -enable-kvm \
+              -cpu host \
+              -drive file=/home/litruv/windows.qcow2,format=qcow2 \
+              -boot d \
+              -vga virtio \
+              -display vnc=:0 \
+              > /tmp/qemu.log 2>&1' &
+            disown
+          }
+          
+          kill_vm() {
+            echo "Killing VM..."
+            sudo pkill -9 qemu-system-x86 || true
+            sleep 5
+          }
+          
+          check_runner() {
+            API_URL="${{ github.server_url }}/api/v1/repos/${{ github.repository }}/actions/runners"
+            RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.CI_BOT_TOKEN }}" "$API_URL" 2>/dev/null)
+            
+            if [ -z "$RESPONSE" ]; then
+              echo "  Could not query runner API"
+              return 1
+            fi
+            
+            ONLINE=$(echo "$RESPONSE" | jq -r '.runners[] | select(.labels[].name == "windows-vm") | select(.status == "online") | .name' 2>/dev/null)
+            
+            if [ -n "$ONLINE" ]; then
+              echo "  Runner found online!"
+              return 0
+            fi
+            
+            echo "  Windows runner (windows-vm) is NOT online"
+            return 1
+          }
+          
+          wait_for_runner() {
+            local max_checks=$1
+            local required_successes=${2:-1}
+            local successes=0
+            echo "Waiting for runner to come online (need ${required_successes} successful checks, max ${max_checks} attempts)..."
+            for i in $(seq 1 $max_checks); do
+              if check_runner; then
+                successes=$((successes + 1))
+                echo "Runner online check $successes/$required_successes passed ($i/$max_checks)"
+                if [ $successes -ge $required_successes ]; then
+                  echo "Runner confirmed online after $successes consecutive checks!"
+                  return 0
+                fi
+              else
+                successes=0
+                echo "Waiting for runner... ($i/$max_checks)"
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          
+          echo "Checking if runner is online..."
+          if wait_for_runner 12 12; then
+            echo "Runner verified online!"
+            exit 0
+          fi
+          
+          if [ "${{ steps.check-vm.outputs.vm_running }}" == "true" ]; then
+            echo "VM process exists but runner not responding, restarting VM..."
+            kill_vm
+          fi
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            start_vm
+            echo "Waiting ${BOOT_WAIT}s for VM to boot..."
+            sleep $BOOT_WAIT
+            
+            if ! pgrep -f "qemu-system-x86_64.*windows.qcow2" > /dev/null; then
+              echo "VM process not found, retrying..."
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              continue
+            fi
+            
+            if wait_for_runner $((RUNNER_CHECK_TIMEOUT / 5)); then
+              exit 0
+            fi
+            
+            echo "Runner did not come online, killing VM and retrying..."
+            kill_vm
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+          done
+          
+          echo "ERROR: Failed to start VM after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: VM Status
+        run: |
+          if [ "${{ steps.check-vm.outputs.vm_running }}" == "true" ]; then
+            echo "Using existing VM"
+          else
+            echo "Started new VM"
+          fi
+          
+          if pgrep -f "qemu-system-x86_64.*windows.qcow2" > /dev/null; then
+            echo "VM process confirmed running"
+          else
+            echo "ERROR: VM process not found!"
+            exit 1
+          fi
+
+  build:
+    runs-on: windows-vm
+    needs: start-vm
+    timeout-minutes: 60
+    
+    steps:
+      - name: Cancel pending shutdown
+        shell: powershell
+        run: |
+          shutdown /s /t 1000 2>$null
+          shutdown /a 2>$null
+          Write-Host "Cancelled any pending shutdown"
+
+      - name: Disable sleep and power saving
+        shell: powershell
+        run: |
+          powercfg /change standby-timeout-ac 0
+          powercfg /change standby-timeout-dc 0
+          powercfg /change hibernate-timeout-ac 0
+          powercfg /change hibernate-timeout-dc 0
+          powercfg /change monitor-timeout-ac 0
+          powercfg /change monitor-timeout-dc 0
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          Write-Host "Power saving disabled for build"
+
+      - name: Fast checkout (persistent repo)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          
+          $repoDir = "C:\BuildCache\cinny-desktop\Repo"
+          $serverUrl = "${{ github.server_url }}"
+          $repo = "${{ github.repository }}"
+          $branch = "${{ github.ref_name }}"
+          $token = "${{ secrets.CI_BOT_TOKEN }}"
+          
+          $uri = [System.Uri]$serverUrl
+          $scheme = $uri.Scheme
+          $authority = $uri.Authority
+          $repoUrl = "${scheme}://${authority}/${repo}"
+          
+          Write-Host "Using server: ${scheme}://${authority}"
+          
+          if (-not (Test-Path "C:\BuildCache\cinny-desktop")) {
+            New-Item -ItemType Directory -Path "C:\BuildCache\cinny-desktop" -Force
+          }
+          
+          git config --global credential.helper ""
+          git config --global "http.${scheme}://${authority}/.extraheader" "Authorization: token $token"
+          
+          function Remove-GitLocks {
+            $lockFiles = @(
+              "$repoDir\.git\shallow.lock",
+              "$repoDir\.git\index.lock",
+              "$repoDir\.git\HEAD.lock",
+              "$repoDir\.git\config.lock"
+            )
+            foreach ($lock in $lockFiles) {
+              if (Test-Path $lock) {
+                Write-Host "Removing stale lock: $lock"
+                Remove-Item -Force $lock
+              }
+            }
+          }
+          
+          function Do-Clone {
+            Write-Host "Cloning repository fresh..."
+            if (Test-Path $repoDir) {
+              Remove-Item -Recurse -Force $repoDir
+            }
+            
+            $cloneSuccess = $false
+            for ($i = 1; $i -le 3; $i++) {
+              Write-Host "Clone attempt $i/3..."
+              & git clone --depth=1 --branch $branch $repoUrl $repoDir 2>&1 | Out-Host
+              if ($LASTEXITCODE -eq 0) {
+                $cloneSuccess = $true
+                break
+              }
+              Write-Host "Clone attempt $i failed, retrying in 5 seconds..."
+              if (Test-Path $repoDir) {
+                Remove-Item -Recurse -Force $repoDir
+              }
+              Start-Sleep -Seconds 5
+            }
+            
+            if (-not $cloneSuccess) {
+              throw "Clone failed after 3 attempts"
+            }
+            
+            Push-Location $repoDir
+            & git submodule update --init --recursive --depth=1 2>&1 | Out-Host
+            Pop-Location
+          }
+          
+          function Do-Update {
+            Write-Host "Updating existing repo..."
+            Push-Location $repoDir
+            
+            Remove-GitLocks
+            
+            git remote set-url origin $repoUrl 2>$null
+            Write-Host "Remote URL updated"
+            
+            git reset --hard HEAD 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Reset failed, repo may be corrupted"
+              Pop-Location
+              return $false
+            }
+            
+            git clean -fdx -e node_modules/ -e cinny/node_modules/ 2>$null
+            
+            $fetchSuccess = $false
+            for ($i = 1; $i -le 3; $i++) {
+              Write-Host "Fetch attempt $i/3..."
+              & git fetch origin $branch --depth=1 2>&1 | Out-Host
+              if ($LASTEXITCODE -eq 0) {
+                $fetchSuccess = $true
+                break
+              }
+              Write-Host "Fetch attempt $i failed, retrying in 5 seconds..."
+              Start-Sleep -Seconds 5
+            }
+            
+            if (-not $fetchSuccess) {
+              Write-Host "All fetch attempts failed"
+              Pop-Location
+              return $false
+            }
+            
+            & git checkout -B $branch origin/$branch 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "Checkout failed"
+              Pop-Location
+              return $false
+            }
+            
+            & git submodule update --init --recursive --depth=1 2>&1 | Out-Host
+            
+            Pop-Location
+            return $true
+          }
+          
+          if (Test-Path "$repoDir\.git") {
+            $success = Do-Update
+            if (-not $success) {
+              Write-Host "Update failed, will re-clone..."
+              Do-Clone
+            }
+          } else {
+            Do-Clone
+          }
+          
+          if (-not (Test-Path "$repoDir\package.json")) {
+            throw "Checkout verification failed - package.json not found"
+          }
+          
+          Write-Host "Checkout complete at: $repoDir"
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repoDir = "C:\BuildCache\cinny-desktop\Repo"
+          
+          Push-Location $repoDir
+          
+          Write-Host "Installing root dependencies..."
+          npm ci --prefer-offline --no-audit
+          
+          Write-Host "Installing cinny dependencies..."
+          Push-Location cinny
+          npm ci --prefer-offline --no-audit
+          Pop-Location
+          
+          Pop-Location
+          Write-Host "Dependencies installed"
+
+      - name: Build Paarrot
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repoDir = "C:\BuildCache\cinny-desktop\Repo"
+          
+          Push-Location $repoDir
+          
+          Write-Host "Building Paarrot..."
+          npm run build:win
+          
+          Pop-Location
+          Write-Host "Build completed successfully!"
+
+      - name: Upload artifacts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $repoDir = "C:\BuildCache\cinny-desktop\Repo"
+          $artifactDir = "$repoDir\dist-electron"
+          
+          if (-not (Test-Path $artifactDir)) {
+            Write-Error "Build artifacts not found at $artifactDir"
+            exit 1
+          }
+          
+          Write-Host "Build artifacts:"
+          Get-ChildItem $artifactDir -Recurse | Select-Object FullName
+          
+          # TODO: Copy artifacts to artifact server or release location
+          Write-Host "Artifacts ready at: $artifactDir"
+
+      - name: Schedule delayed shutdown
+        if: always()
+        shell: powershell
+        run: |
+          shutdown /s /t 900 /c "Build complete - shutting down in 15 minutes"
+          Write-Host "VM will shutdown in 15 minutes unless another build starts"

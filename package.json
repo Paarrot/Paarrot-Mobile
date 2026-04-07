@@ -1,0 +1,27 @@
+{
+  "name": "paarrot",
+  "version": "4.11.66",
+  "description": "Paarrot - A Matrix client based on Cinny",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "android:prepare": "node -e \"require('fs').copyFileSync('config.json', 'cinny/config.json')\" && cd cinny && npm run build && npx cap sync android",
+    "android:open": "cd cinny && npx cap open android",
+    "android:run": "cd cinny && npx cap run android",
+    "android:apk": "npm run android:prepare && cd cinny/android && gradlew.bat assembleDebug",
+    "android:apk:release": "npm run android:prepare && cd cinny/android && gradlew.bat assembleRelease",
+    "android:aab": "npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease"
+  },
+  "keywords": [],
+  "author": {
+    "name": "Mates.Media",
+    "email": "mates.media@users.noreply.github.com"
+  },
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "node-fetch": "3.3.2",
+    "png2icons": "2.0.1",
+    "sharp": "0.34.5"
+  }
+}
