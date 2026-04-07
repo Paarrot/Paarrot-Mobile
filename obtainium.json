@@ -1,0 +1,7 @@
+{
+  "id": "com.paarrot.app",
+  "url": "http://synbox.ruv.wtf:8418/litruv/cinny-mobile",
+  "author": "litruv",
+  "name": "Paarrot",
+  "additionalSettings": "{\"apkFilterRegEx\":\"Paarrot\\\\.apk\",\"invertAPKFilter\":false,\"autoApkFilterByArch\":true,\"releaseIdSkipPatterns\":[],\"sortMethodChoice\":0}"
+}
