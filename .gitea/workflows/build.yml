@@ -86,6 +86,9 @@ jobs:
       - name: Clean previous cinny dist
         run: rm -rf cinny/dist
 
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
       - name: Apply overlay and build Android APK
         run: npm run android:apk:linux
 
