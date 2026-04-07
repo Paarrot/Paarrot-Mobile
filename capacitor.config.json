@@ -1,0 +1,12 @@
+{
+  "appId": "com.paarrot.app",
+  "appName": "Paarrot",
+  "webDir": "cinny/dist",
+  "bundledWebRuntime": false,
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_paarrot",
+      "iconColor": "#FF8A00"
+    }
+  }
+}
