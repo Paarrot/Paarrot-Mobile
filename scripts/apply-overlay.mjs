@@ -9,9 +9,6 @@
  *  5. Copies capacitor.config.json (root) into cinny/capacitor.config.json with webDir reset to "dist"
  *  6. Creates a cinny/android symlink/junction -> root android/ so Capacitor can find it
  *  7. Writes android/local.properties from ANDROID_HOME env var (so it works on any machine)
- *  8. Patches android/capacitor.settings.gradle to use ../cinny/node_modules instead of
- *     ../node_modules, so Gradle resolves the correct path on both Windows (junction) and
- *     Linux (symlink, where Java resolves CWD to the real ROOT/android/ path)
  *
  * Run before every Android build to keep the cinny submodule clean while layering
  * the Capacitor / Android platform changes on top of it.
@@ -134,24 +131,6 @@ if (androidHome) {
   console.log(`  sdk.dir=${androidHome}`);
 } else {
   console.warn('[apply-overlay] Warning: ANDROID_HOME not set, skipping local.properties update');
-}
-
-// 8. Patch android/capacitor.settings.gradle to use ../cinny/node_modules
-// On Linux, Java resolves the symlink for CWD so Gradle sees ROOT/android/ as its project
-// directory, making ../node_modules point to ROOT/node_modules (wrong). On Windows, the
-// junction keeps the logical path cinny/android so ../node_modules resolves correctly to
-// cinny/node_modules. Patching to ../cinny/node_modules works on both:
-//   Linux:   ROOT/android/../cinny/node_modules   = ROOT/cinny/node_modules ✓
-//   Windows: cinny/android/../cinny/node_modules  = cinny/node_modules ✓
-console.log('[apply-overlay] Patching android/capacitor.settings.gradle...');
-const capSettingsPath = join(androidTarget, 'capacitor.settings.gradle');
-const original = readFileSync(capSettingsPath, 'utf8');
-const patched = original.replaceAll('../node_modules/', '../cinny/node_modules/');
-if (patched !== original) {
-  writeFileSync(capSettingsPath, patched, 'utf8');
-  console.log('  patched ../node_modules/ -> ../cinny/node_modules/');
-} else {
-  console.log('  already patched or no replacements needed');
 }
 
 console.log('[apply-overlay] Done.');
