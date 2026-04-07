@@ -22,6 +22,15 @@ const STASH_FLAG = join(ROOT, '.cinny-stash-pending');
 console.log('[restore-cinny] Reverting tracked changes...');
 execSync('git checkout -- .', { cwd: CINNY, stdio: 'inherit' });
 
+// Restore android/capacitor.settings.gradle patched by apply-overlay
+console.log('[restore-cinny] Restoring android/capacitor.settings.gradle...');
+try {
+  execSync('git checkout -- android/capacitor.settings.gradle', { cwd: ROOT, stdio: 'inherit' });
+  console.log('[restore-cinny] Restored android/capacitor.settings.gradle');
+} catch {
+  console.warn('[restore-cinny] Could not restore capacitor.settings.gradle (may not be modified)');
+}
+
 // 2. Remove untracked capacitor.config.json written by the overlay
 const capConfig = join(CINNY, 'capacitor.config.json');
 if (existsSync(capConfig)) {
