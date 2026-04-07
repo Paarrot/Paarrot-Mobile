@@ -162,7 +162,7 @@ jobs:
           path: dist-electron/Paarrot-*.AppImage
 
   build-android:
-    runs-on: windows
+    runs-on: ubuntu-latest
     needs: increment-version
     if: always() && (needs.increment-version.outputs.should_build == 'true' || needs.increment-version.result == 'skipped')
 
@@ -174,12 +174,10 @@ jobs:
           ref: ${{ github.ref_name }}
 
       - name: Checkout submodules manually
-        shell: powershell
         run: git submodule update --init --recursive
 
       - name: Pull latest (after version bump)
         if: github.ref == 'refs/heads/master'
-        shell: powershell
         run: git pull origin master
 
       - name: Setup Node.js
@@ -187,18 +185,23 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install dependencies (root)
         run: npm install --prefer-offline
 
       - name: Clean previous cinny dist
-        shell: powershell
-        run: |
-          if (Test-Path cinny/dist) { Remove-Item -Recurse -Force cinny/dist }
+        run: rm -rf cinny/dist
 
       - name: Apply overlay and build Android APK
-        run: npm run android:apk
-        env:
-          ANDROID_HOME: ${{ secrets.ANDROID_HOME }}
+        run: npm run android:apk:linux
 
       - name: Upload APK
         uses: actions/upload-artifact@v3

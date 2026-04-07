@@ -29,14 +29,18 @@ if (existsSync(capConfig)) {
   console.log('[restore-cinny] Removed cinny/capacitor.config.json');
 }
 
-// 3. Remove the android junction (rmdir only removes the junction, not the real directory)
+// 3. Remove the android link (junction on Windows, symlink on Linux)
 const androidJunction = join(CINNY, 'android');
 if (existsSync(androidJunction)) {
   try {
-    execSync(`cmd /c rmdir "${androidJunction}"`, { stdio: 'pipe' });
-    console.log('[restore-cinny] Removed cinny/android junction');
+    if (process.platform === 'win32') {
+      execSync(`cmd /c rmdir "${androidJunction}"`, { stdio: 'pipe' });
+    } else {
+      unlinkSync(androidJunction);
+    }
+    console.log('[restore-cinny] Removed cinny/android link');
   } catch (err) {
-    console.warn('[restore-cinny] Could not remove android junction:', err.message);
+    console.warn('[restore-cinny] Could not remove android link:', err.message);
   }
 }
 

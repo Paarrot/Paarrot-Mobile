@@ -7,7 +7,7 @@
  *  3. Copies overlay/tsconfig.json into cinny/tsconfig.json
  *  4. Merges overlay/package-additions.json dependencies into cinny/package.json
  *  5. Copies capacitor.config.json (root) into cinny/capacitor.config.json with webDir reset to "dist"
- *  6. Creates a Windows directory junction cinny/android -> root android/ so Capacitor can find it
+ *  6. Creates a cinny/android symlink/junction -> root android/ so Capacitor can find it
  *  7. Writes android/local.properties from ANDROID_HOME env var (so it works on any machine)
  *
  * Run before every Android build to keep the cinny submodule clean while layering
@@ -97,28 +97,36 @@ const cinnyCapConfig = { ...rootCapConfig, webDir: 'dist' };
 writeFileSync(join(CINNY, 'capacitor.config.json'), JSON.stringify(cinnyCapConfig, null, 2) + '\n', 'utf8');
 console.log(`  wrote cinny/capacitor.config.json (webDir: "dist")`);
 
-// 6. Create a directory junction cinny/android -> root android/ so Capacitor CLI can find it
-console.log('[apply-overlay] Setting up android/ junction...');
+// 6. Create cinny/android -> root android/ link so Capacitor CLI can find it
+console.log('[apply-overlay] Setting up android/ link...');
 const androidJunction = join(CINNY, 'android');
 const androidTarget = resolve(ROOT, 'android');
 if (!existsSync(androidJunction)) {
-  try {
-    execSync(`cmd /c mklink /J "${androidJunction}" "${androidTarget}"`, { stdio: 'pipe' });
-    console.log(`  created junction: cinny/android -> ${androidTarget}`);
-  } catch (err) {
-    console.warn('  mklink /J failed, falling back to directory copy...');
-    copyDirRecursive(androidTarget, androidJunction);
-    console.log(`  copied android/ into cinny/android/`);
+  if (process.platform === 'win32') {
+    try {
+      execSync(`cmd /c mklink /J "${androidJunction}" "${androidTarget}"`, { stdio: 'pipe' });
+      console.log(`  created junction: cinny/android -> ${androidTarget}`);
+    } catch (err) {
+      console.warn('  mklink /J failed, falling back to directory copy...');
+      copyDirRecursive(androidTarget, androidJunction);
+      console.log(`  copied android/ into cinny/android/`);
+    }
+  } else {
+    const { symlinkSync } = await import('fs');
+    symlinkSync(androidTarget, androidJunction);
+    console.log(`  created symlink: cinny/android -> ${androidTarget}`);
   }
 } else {
-  console.log(`  android/ junction already exists, skipping`);
+  console.log(`  android/ link already exists, skipping`);
 }
 
 // 7. Write android/local.properties with the current machine's Android SDK path
 const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
 if (androidHome) {
   console.log('[apply-overlay] Writing android/local.properties...');
-  const sdkDir = androidHome.replace(/\\/g, '\\\\');
+  const sdkDir = process.platform === 'win32'
+    ? androidHome.replace(/\\/g, '\\\\')
+    : androidHome;
   writeFileSync(join(androidTarget, 'local.properties'), `sdk.dir=${sdkDir}\n`, 'utf8');
   console.log(`  sdk.dir=${androidHome}`);
 } else {

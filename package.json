@@ -11,8 +11,11 @@
     "android:open": "cd cinny && npx cap open android",
     "android:run": "cd cinny && npx cap run android",
     "android:apk": "npm run android:prepare && cd cinny/android && gradlew.bat assembleDebug && cd ../.. && node scripts/restore-cinny.mjs",
+    "android:apk:linux": "npm run android:prepare && cd cinny/android && ./gradlew assembleDebug && cd ../.. && node scripts/restore-cinny.mjs",
     "android:apk:release": "npm run android:prepare && cd cinny/android && gradlew.bat assembleRelease && cd ../.. && node scripts/restore-cinny.mjs",
-    "android:aab": "npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease && cd ../.. && node scripts/restore-cinny.mjs"
+    "android:apk:release:linux": "npm run android:prepare && cd cinny/android && ./gradlew assembleRelease && cd ../.. && node scripts/restore-cinny.mjs",
+    "android:aab": "npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease && cd ../.. && node scripts/restore-cinny.mjs",
+    "android:aab:linux": "npm run android:prepare && cd cinny/android && ./gradlew bundleRelease && cd ../.. && node scripts/restore-cinny.mjs"
   },
   "keywords": [],
   "author": {
