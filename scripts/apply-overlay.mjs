@@ -8,6 +8,7 @@
  *  4. Merges overlay/package-additions.json dependencies into cinny/package.json
  *  5. Copies capacitor.config.json (root) into cinny/capacitor.config.json with webDir reset to "dist"
  *  6. Creates a Windows directory junction cinny/android -> root android/ so Capacitor can find it
+ *  7. Writes android/local.properties from ANDROID_HOME env var (so it works on any machine)
  *
  * Run before every Android build to keep the cinny submodule clean while layering
  * the Capacitor / Android platform changes on top of it.
@@ -97,6 +98,17 @@ if (!existsSync(androidJunction)) {
   }
 } else {
   console.log(`  android/ junction already exists, skipping`);
+}
+
+// 7. Write android/local.properties with the current machine's Android SDK path
+const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;
+if (androidHome) {
+  console.log('[apply-overlay] Writing android/local.properties...');
+  const sdkDir = androidHome.replace(/\\/g, '\\\\');
+  writeFileSync(join(androidTarget, 'local.properties'), `sdk.dir=${sdkDir}\n`, 'utf8');
+  console.log(`  sdk.dir=${androidHome}`);
+} else {
+  console.warn('[apply-overlay] Warning: ANDROID_HOME not set, skipping local.properties update');
 }
 
 console.log('[apply-overlay] Done.');
