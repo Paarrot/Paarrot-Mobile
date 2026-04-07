@@ -36,6 +36,11 @@ import {
   setupNotificationTapListener,
 } from '../../utils/tauri';
 import { setPaarrotNavigate, initPaarrotAPI } from '../../paarrot-api';
+import {
+  startBackgroundSync,
+  stopBackgroundSync,
+  setAppForegroundState,
+} from '../../utils/backgroundSync';
 
 /**
  * Applies the selected emoji style font to the document.
@@ -414,6 +419,31 @@ function MessageNotifications() {
 }
 
 /**
+ * Starts the native Android background sync service on login, keeps it
+ * informed of foreground state so it doesn't double-fire notifications,
+ * and stops it cleanly on unmount (logout).
+ * Only active on Android Capacitor builds.
+ */
+function BackgroundSyncSetup() {
+  const mx = useMatrixClient();
+
+  useEffect(() => {
+    startBackgroundSync(mx);
+
+    const onVisibility = () => setAppForegroundState(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
+    setAppForegroundState(!document.hidden);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      stopBackgroundSync();
+    };
+  }, [mx]);
+
+  return null;
+}
+
+/**
  * Initializes the Paarrot API for Electron integration
  * Registers the navigate function and sets up IPC handlers
  */
@@ -475,6 +505,7 @@ export function ClientNonUIFeatures({ children }: ClientNonUIFeaturesProps) {
       <FaviconUpdater />
       <InviteNotifications />
       <MessageNotifications />
+      <BackgroundSyncSetup />
       <PaarrotAPIInitializer />
       <TaskbarFlashStopper />
       {children}
