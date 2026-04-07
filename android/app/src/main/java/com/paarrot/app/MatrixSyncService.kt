@@ -143,10 +143,11 @@ class MatrixSyncService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureMessageChannel(nm)
 
-        joinedRooms.keys().forEach { roomId ->
+        val roomIds = joinedRooms.keys().asSequence().toList()
+        for (roomId in roomIds) {
             val timeline = joinedRooms.optJSONObject(roomId)
-                ?.optJSONObject("timeline") ?: return@forEach
-            val events = timeline.optJSONArray("events") ?: return@forEach
+                ?.optJSONObject("timeline") ?: continue
+            val events = timeline.optJSONArray("events") ?: continue
 
             for (i in 0 until events.length()) {
                 val event = events.optJSONObject(i) ?: continue
@@ -157,7 +158,7 @@ class MatrixSyncService : Service() {
                 if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
 
                 val content = event.optJSONObject("content") ?: continue
-                val body = content.optString("body").ifBlank { continue }
+                val body = content.optString("body").takeIf { it.isNotBlank() } ?: continue
                 val sender = event.optString("sender")
                 val senderName = sender.substringAfter("@").substringBefore(":")
 
