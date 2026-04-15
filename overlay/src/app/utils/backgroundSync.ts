@@ -1,6 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { MatrixClient } from 'matrix-js-sdk';
-
+ 
 interface MatrixBackgroundSyncPlugin {
   /** Start the background sync service with the given Matrix credentials. */
   start(options: {
