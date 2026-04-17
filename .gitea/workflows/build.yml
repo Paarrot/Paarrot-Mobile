@@ -87,6 +87,10 @@ jobs:
       - name: Install dependencies (root)
         run: npm ci --prefer-offline
       
+      - name: Install dependencies (cinny)
+        working-directory: ./cinny
+        run: npm ci --prefer-offline
+      
       - name: Clean previous builds
         run: rm -rf cinny/dist
       
