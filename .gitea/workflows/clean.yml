@@ -1,0 +1,30 @@
+name: Clean
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Clean build artifacts
+        run: |
+          echo "Cleaning cinny dist..."
+          rm -rf cinny/dist
+
+          echo "Cleaning Android build outputs..."
+          rm -rf android/app/build
+
+          echo "Cleaning root node_modules..."
+          rm -rf node_modules
+
+          echo "Cleaning cinny node_modules..."
+          rm -rf cinny/node_modules
+
+          echo "Done."
