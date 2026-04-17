@@ -7,13 +7,13 @@
   },
   "scripts": {
     "apply-overlay": "node scripts/apply-overlay.mjs",
-    "android:prepare": "cd cinny && npm run build && npx cap sync android",
-    "android:open": "cd cinny && npx cap open android",
-    "android:run": "cd cinny && npx cap run android",
-    "android:apk": "npm run apply-overlay && npm run android:prepare && cd cinny/android && gradlew.bat assembleDebug",
-    "android:apk:release": "npm run apply-overlay && npm run android:prepare && cd cinny/android && gradlew.bat assembleRelease",
-    "android:apk:linux": "cd cinny && npm run build && npx cap sync android && cd ../android && ./gradlew assembleDebug",
-    "android:aab": "npm run apply-overlay && npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease"
+    "android:prepare": "cd cinny && npm run build && cd .. && npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:run": "npx cap run android",
+    "android:apk": "npm run apply-overlay && npm run android:prepare && cd android && gradlew.bat assembleDebug",
+    "android:apk:release": "npm run apply-overlay && npm run android:prepare && cd android && gradlew.bat assembleRelease",
+    "android:apk:linux": "cd cinny && npm run build && cd .. && npx cap sync android && cd android && ./gradlew assembleDebug",
+    "android:aab": "npm run apply-overlay && npm run android:prepare && cd android && gradlew.bat bundleRelease"
   },
   "keywords": [],
   "author": {
@@ -21,6 +21,12 @@
     "email": "mates.media@users.noreply.github.com"
   },
   "license": "AGPL-3.0-only",
+  "dependencies": {
+    "@capacitor/android": "8.3.0",
+    "@capacitor/cli": "8.3.0",
+    "@capacitor/core": "8.3.0",
+    "@capacitor/local-notifications": "8.0.2"
+  },
   "devDependencies": {
     "node-fetch": "3.3.2",
     "png2icons": "2.0.1",
