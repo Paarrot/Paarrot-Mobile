@@ -15,88 +15,109 @@ jobs:
     outputs:
       version: ${{ steps.bump.outputs.VERSION }}
       should_build: ${{ steps.bump.outputs.SHOULD_BUILD }}
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-
+      
       - name: Bump patch version
         id: bump
         run: |
           CURRENT=$(grep -Po '"version":\s*"\K[^"]+' package.json | head -1)
           echo "Current version: $CURRENT"
+          
           MAJOR=$(echo $CURRENT | cut -d. -f1)
           MINOR=$(echo $CURRENT | cut -d. -f2)
           PATCH=$(echo $CURRENT | cut -d. -f3)
           NEW_PATCH=$((PATCH + 1))
           NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
           echo "New version: $NEW_VERSION"
+          
           sed -i "s/\"version\": \"${CURRENT}\"/\"version\": \"${NEW_VERSION}\"/" package.json
+          
           grep '"version"' package.json | head -1
+          
           echo "VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "SHOULD_BUILD=true" >> $GITHUB_OUTPUT
-
+      
       - name: Commit and push version bump
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add package.json
           git commit -m "chore: bump version to ${{ steps.bump.outputs.VERSION }} [skip ci]"
-          for i in 1 2 3; do
-            git pull --rebase origin master && git push && break
-            echo "Push attempt $i failed, retrying..."
-            sleep 3
-          done
+          git push
 
-  build-and-release:
+  build-android:
     runs-on: ubuntu-latest
     needs: increment-version
     if: always() && (needs.increment-version.outputs.should_build == 'true' || needs.increment-version.result == 'skipped')
-
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           submodules: false
           ref: ${{ github.ref_name }}
-
+      
       - name: Checkout submodules manually
         run: git submodule update --init --recursive
-
+      
       - name: Pull latest (after version bump)
         if: github.ref == 'refs/heads/master'
         run: git pull origin master
-
+      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-
+      
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-
+      
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
+      
       - name: Install dependencies (root)
         run: npm ci --prefer-offline
-
-      - name: Clean previous cinny dist
+      
+      - name: Clean previous builds
         run: rm -rf cinny/dist
-
+      
       - name: Make gradlew executable
         run: chmod +x android/gradlew
-
+      
       - name: Apply overlay and build Android APK
         run: npm run android:apk:linux
+      
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: Paarrot-Android.apk
+          path: android/app/build/outputs/apk/debug/Paarrot-*.apk
 
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [increment-version, build-android]
+    if: always() && needs.build-android.result == 'success'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+      
+      - name: Pull latest (after version bump)
+        if: github.ref == 'refs/heads/master'
+        run: git pull origin master
+      
       - name: Get version
         id: version
         run: |
@@ -107,17 +128,19 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
-
+      
       - name: Check if tag exists
         id: tag_check
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists"
             echo "exists=true" >> $GITHUB_OUTPUT
           else
+            echo "Tag v$VERSION does not exist"
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
-
+      
       - name: Create and push tag
         if: steps.tag_check.outputs.exists == 'false'
         run: |
@@ -125,8 +148,19 @@ jobs:
           git config user.email "actions@github.com"
           git tag -a "v${{ steps.version.outputs.VERSION }}" -m "Release v${{ steps.version.outputs.VERSION }}"
           git push origin "v${{ steps.version.outputs.VERSION }}"
-
-      - name: Create or Update Release
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+      
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f -name "*.apk" -exec cp {} release-files/ \;
+          ls -la release-files/
+      
+      - name: Create or Update Gitea Release
         env:
           GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -134,17 +168,10 @@ jobs:
           TAG_NAME="v${VERSION}"
           API_BASE="http://synbox.ruv.wtf:8418/api/v1"
           REPO="litruv/cinny-mobile"
-
-          APK=$(find android/app/build/outputs/apk/debug -name "Paarrot-*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "No APK found!"
-            exit 1
-          fi
-          echo "Found APK: $APK"
-
+          
           RELEASE_ID=$(curl -s -H "Authorization: token ${GITEA_TOKEN}" \
             "${API_BASE}/repos/${REPO}/releases/tags/${TAG_NAME}" | jq -r '.id // empty')
-
+          
           if [ -z "$RELEASE_ID" ]; then
             echo "Creating new release for ${TAG_NAME}..."
             RELEASE_ID=$(curl -s -X POST \
@@ -154,81 +181,67 @@ jobs:
               "${API_BASE}/repos/${REPO}/releases" | jq -r '.id')
             echo "Created release with ID: ${RELEASE_ID}"
           else
-            echo "Release exists with ID: ${RELEASE_ID}, deleting existing assets..."
+            echo "Release exists with ID: ${RELEASE_ID}"
+            echo "Deleting existing assets..."
             ASSETS=$(curl -s -H "Authorization: token ${GITEA_TOKEN}" \
               "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets" | jq -r '.[].id')
             for ASSET_ID in $ASSETS; do
+              echo "Deleting asset ${ASSET_ID}..."
               curl -s -X DELETE -H "Authorization: token ${GITEA_TOKEN}" \
                 "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets/${ASSET_ID}"
             done
           fi
-
-          FILENAME="Paarrot-${VERSION}.apk"
-          echo "Uploading ${FILENAME}..."
-          curl -s -X POST \
-            -H "Authorization: token ${GITEA_TOKEN}" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@${APK}" \
-            "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
-          echo ""
-
-          echo "Release complete!"
-
-      - name: Create or Update GitHub Release
+          
+          echo "Uploading assets..."
+          for FILE in release-files/*; do
+            FILENAME="Paarrot-${VERSION}.apk"
+            echo "Uploading ${FILENAME}..."
+            curl -s -X POST \
+              -H "Authorization: token ${GITEA_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@${FILE}" \
+              "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
+            echo ""
+          done
+          
+          echo "Gitea release complete!"
+      
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GHTOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           TAG_NAME="v${VERSION}"
-          API_BASE="https://api.github.com"
-          REPO="Paarrot/Paarrot-Mobile"
-
-          APK=$(find android/app/build/outputs/apk/debug -name "Paarrot-*.apk" | head -1)
-          if [ -z "$APK" ]; then
-            echo "No APK found for GitHub release!"
-            exit 1
-          fi
-          echo "Found APK: $APK"
-
-          RELEASE_RESPONSE=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${API_BASE}/repos/${REPO}/releases/tags/${TAG_NAME}")
-          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id // empty')
-
+          GITHUB_REPO="Paarrot/Paarrot-Mobile"
+          
+          RELEASE_ID=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${TAG_NAME}" | jq -r '.id // empty')
+          
           if [ -z "$RELEASE_ID" ]; then
             echo "Creating new GitHub release for ${TAG_NAME}..."
-            RELEASE_RESPONSE=$(curl -s -X POST \
+            RELEASE_ID=$(curl -s -X POST \
               -H "Authorization: token ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
               -H "Content-Type: application/json" \
               -d "{\"tag_name\": \"${TAG_NAME}\", \"name\": \"Release ${TAG_NAME}\", \"body\": \"Release ${VERSION}\", \"draft\": false, \"prerelease\": false}" \
-              "${API_BASE}/repos/${REPO}/releases")
-            RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+              "https://api.github.com/repos/${GITHUB_REPO}/releases" | jq -r '.id')
             echo "Created GitHub release with ID: ${RELEASE_ID}"
           else
-            echo "GitHub release exists with ID: ${RELEASE_ID}, deleting existing assets..."
-            ASSETS=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets" | jq -r '.[].id')
-            for ASSET_ID in $ASSETS; do
-              curl -s -X DELETE \
-                -H "Authorization: token ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                "${API_BASE}/repos/${REPO}/releases/assets/${ASSET_ID}"
-            done
+            echo "GitHub release exists with ID: ${RELEASE_ID}"
           fi
-
-          FILENAME="Paarrot-${VERSION}.apk"
+          
+          echo "Uploading assets to GitHub..."
           UPLOAD_URL=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}" | jq -r '.upload_url' | sed 's/{?name,label}//')
-          echo "Uploading ${FILENAME} to GitHub..."
-          curl -s -X POST \
-            -H "Authorization: token ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/octet-stream" \
-            --data-binary "@${APK}" \
-            "${UPLOAD_URL}?name=${FILENAME}"
-          echo ""
-
+            "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}" | jq -r '.upload_url' | sed 's/{?name,label}//')
+          
+          for FILE in release-files/*; do
+            FILENAME="Paarrot-${VERSION}.apk"
+            echo "Uploading ${FILENAME} to GitHub..."
+            curl -s -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Content-Type: application/octet-stream" \
+              --data-binary "@${FILE}" \
+              "${UPLOAD_URL}?name=${FILENAME}"
+            echo ""
+          done
+          
           echo "GitHub release complete!"
