@@ -86,7 +86,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies (root)
-        run: npm install --prefer-offline
+        run: npm ci --prefer-offline
 
       - name: Clean previous cinny dist
         run: rm -rf cinny/dist
@@ -219,13 +219,16 @@ jobs:
           fi
 
           FILENAME="Paarrot-${VERSION}.apk"
+          UPLOAD_URL=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}" | jq -r '.upload_url' | sed 's/{?name,label}//')
           echo "Uploading ${FILENAME} to GitHub..."
           curl -s -X POST \
             -H "Authorization: token ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: application/octet-stream" \
             --data-binary "@${APK}" \
-            "https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
+            "${UPLOAD_URL}?name=${FILENAME}"
           echo ""
 
           echo "GitHub release complete!"
