@@ -169,3 +169,59 @@ jobs:
           echo ""
 
           echo "Release complete!"
+
+      - name: Create or Update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GHTOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          TAG_NAME="v${VERSION}"
+          API_BASE="https://api.github.com"
+          REPO="Paarrot/Paarrot-Mobile"
+
+          APK=$(find android/app/build/outputs/apk/debug -name "Paarrot-*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "No APK found for GitHub release!"
+            exit 1
+          fi
+          echo "Found APK: $APK"
+
+          RELEASE_RESPONSE=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${API_BASE}/repos/${REPO}/releases/tags/${TAG_NAME}")
+          RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id // empty')
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Creating new GitHub release for ${TAG_NAME}..."
+            RELEASE_RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\": \"${TAG_NAME}\", \"name\": \"Release ${TAG_NAME}\", \"body\": \"Release ${VERSION}\", \"draft\": false, \"prerelease\": false}" \
+              "${API_BASE}/repos/${REPO}/releases")
+            RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq -r '.id')
+            echo "Created GitHub release with ID: ${RELEASE_ID}"
+          else
+            echo "GitHub release exists with ID: ${RELEASE_ID}, deleting existing assets..."
+            ASSETS=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets" | jq -r '.[].id')
+            for ASSET_ID in $ASSETS; do
+              curl -s -X DELETE \
+                -H "Authorization: token ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "${API_BASE}/repos/${REPO}/releases/assets/${ASSET_ID}"
+            done
+          fi
+
+          FILENAME="Paarrot-${VERSION}.apk"
+          echo "Uploading ${FILENAME} to GitHub..."
+          curl -s -X POST \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@${APK}" \
+            "https://uploads.github.com/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
+          echo ""
+
+          echo "GitHub release complete!"
