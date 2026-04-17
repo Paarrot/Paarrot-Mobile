@@ -11,6 +11,7 @@
     "android:run": "cd cinny && npx cap run android",
     "android:apk": "npm run android:prepare && cd cinny/android && gradlew.bat assembleDebug",
     "android:apk:release": "npm run android:prepare && cd cinny/android && gradlew.bat assembleRelease",
+    "android:apk:linux": "npm run android:prepare && cd android && ./gradlew assembleDebug",
     "android:aab": "npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease"
   },
   "keywords": [],
