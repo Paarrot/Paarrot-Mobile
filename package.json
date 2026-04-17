@@ -6,13 +6,14 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "android:prepare": "node -e \"require('fs').copyFileSync('config.json', 'cinny/config.json')\" && cd cinny && npm run build && npx cap sync android",
+    "apply-overlay": "node scripts/apply-overlay.mjs",
+    "android:prepare": "cd cinny && npm run build && cd .. && npx cap sync android",
     "android:open": "cd cinny && npx cap open android",
     "android:run": "cd cinny && npx cap run android",
-    "android:apk": "npm run android:prepare && cd cinny/android && gradlew.bat assembleDebug",
-    "android:apk:release": "npm run android:prepare && cd cinny/android && gradlew.bat assembleRelease",
-    "android:apk:linux": "npm run android:prepare && cd android && ./gradlew assembleDebug",
-    "android:aab": "npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease"
+    "android:apk": "npm run apply-overlay && npm run android:prepare && cd cinny/android && gradlew.bat assembleDebug",
+    "android:apk:release": "npm run apply-overlay && npm run android:prepare && cd cinny/android && gradlew.bat assembleRelease",
+    "android:apk:linux": "cd cinny && npm run build && cd .. && npx cap sync android && cd android && ./gradlew assembleDebug",
+    "android:aab": "npm run apply-overlay && npm run android:prepare && cd cinny/android && gradlew.bat bundleRelease"
   },
   "keywords": [],
   "author": {

@@ -87,6 +87,9 @@ jobs:
       - name: Install dependencies (root)
         run: npm ci --prefer-offline
       
+      - name: Apply overlay
+        run: npm run apply-overlay
+      
       - name: Install dependencies (cinny)
         working-directory: ./cinny
         run: npm ci --prefer-offline
@@ -97,7 +100,7 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x android/gradlew
       
-      - name: Apply overlay and build Android APK
+      - name: Build Android APK
         run: npm run android:apk:linux
       
       - name: Upload APK
