@@ -1,4 +1,4 @@
-# Paarrot
+# Paarrot 
 
 Paarrot is a Matrix client focusing primarily on simple, elegant and secure interface. The desktop app is built with Electron and based on Cinny.
  
