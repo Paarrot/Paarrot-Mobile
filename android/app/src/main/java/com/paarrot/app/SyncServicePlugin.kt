@@ -2,7 +2,6 @@ package com.paarrot.app
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -13,19 +12,16 @@ import com.getcapacitor.annotation.CapacitorPlugin
  * Capacitor plugin that controls [MatrixSyncService] from JS.
  *
  * JS API:
- * - `start({ homeserverUrl, accessToken, userId, deviceId })` — start/update sync service
- * - `stop()` — stop sync service and clear persisted credentials
+ * - `start({ homeserverUrl, accessToken, userId, deviceId })` — persist/update sync credentials
+ * - `triggerPing({ reason })` — force a one-shot fetch (for testing/manual wake)
+ * - `stop()` — clear persisted credentials and stop any in-flight fetch
  * - `setAppForeground({ foreground })` — tell the service whether the app UI is visible
  * - `getStatus()` — returns `{ running: boolean }`
  */
 @CapacitorPlugin(name = "MatrixBackgroundSync")
 class SyncServicePlugin : Plugin() {
 
-    /**
-     * Starts the [MatrixSyncService] with the provided Matrix credentials.
-     * Persists credentials in SharedPreferences so [BootReceiver] can restart
-     * the service after a device reboot.
-     */
+    /** Persists Matrix credentials used later by push-triggered sync fetches. */
     @PluginMethod
     fun start(call: PluginCall) {
         val homeserver = call.getString("homeserverUrl")
@@ -42,19 +38,14 @@ class SyncServicePlugin : Plugin() {
             .putString(MatrixSyncService.EXTRA_DEVICE_ID, deviceId)
             .apply()
 
-        val intent = Intent(context, MatrixSyncService::class.java).apply {
-            putExtra(MatrixSyncService.EXTRA_HOMESERVER, homeserver)
-            putExtra(MatrixSyncService.EXTRA_TOKEN, token)
-            putExtra(MatrixSyncService.EXTRA_USER_ID, userId)
-            putExtra(MatrixSyncService.EXTRA_DEVICE_ID, deviceId)
-        }
+        call.resolve()
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
-        }
-
+    /** Manually triggers a one-shot sync fetch (mainly for diagnostics/testing). */
+    @PluginMethod
+    fun triggerPing(call: PluginCall) {
+        val reason = call.getString("reason") ?: "manual_plugin_ping"
+        MatrixSyncService.requestSyncFetch(context, reason)
         call.resolve()
     }
 

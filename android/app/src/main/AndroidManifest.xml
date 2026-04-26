@@ -47,6 +47,15 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".PushPingReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="com.paarrot.app.ACTION_PUSH_PING" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->

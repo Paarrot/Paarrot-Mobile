@@ -2,14 +2,16 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { MatrixClient } from 'matrix-js-sdk';
  
 interface MatrixBackgroundSyncPlugin {
-  /** Start the background sync service with the given Matrix credentials. */
+  /** Persist credentials used by push-triggered one-shot sync fetches. */
   start(options: {
     homeserverUrl: string;
     accessToken: string;
     userId: string;
     deviceId: string;
   }): Promise<void>;
-  /** Stop the background sync service and clear persisted credentials. */
+  /** Trigger a one-shot fetch as if a push ping arrived. */
+  triggerPing(options: { reason?: string }): Promise<void>;
+  /** Stop any in-flight fetch and clear persisted credentials. */
   stop(): Promise<void>;
   /**
    * Notify the service whether the app UI is visible.
@@ -28,9 +30,8 @@ export const isBackgroundSyncSupported = (): boolean =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
 
 /**
- * Starts the native Matrix background sync service.
- * Reads credentials directly from the active MatrixClient.
- * Safe to call on every login — the service is idempotent.
+ * Persists Matrix credentials for Android push-ping wake handling.
+ * Safe to call on every login.
  * @param mx Authenticated Matrix client
  */
 export const startBackgroundSync = async (mx: MatrixClient): Promise<void> => {
@@ -53,15 +54,29 @@ export const startBackgroundSync = async (mx: MatrixClient): Promise<void> => {
       userId,
       deviceId: deviceId ?? '',
     });
-    console.log('[BackgroundSync] Service started');
+    console.log('[BackgroundSync] Push wake credentials configured');
   } catch (err) {
     console.warn('[BackgroundSync] Failed to start:', err);
   }
 };
 
 /**
- * Stops the native Matrix background sync service.
- * Call on logout so the service stops and credentials are wiped.
+ * Manually triggers a one-shot native fetch.
+ * Useful for diagnostics and bridge testing.
+ */
+export const triggerBackgroundSyncPing = async (reason?: string): Promise<void> => {
+  if (!isBackgroundSyncSupported()) return;
+
+  try {
+    await MatrixBackgroundSync.triggerPing({ reason });
+  } catch (err) {
+    console.warn('[BackgroundSync] triggerPing failed:', err);
+  }
+};
+
+/**
+ * Stops native background sync handling and clears persisted credentials.
+ * Call on logout.
  */
 export const stopBackgroundSync = async (): Promise<void> => {
   if (!isBackgroundSyncSupported()) return;

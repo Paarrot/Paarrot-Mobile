@@ -15,8 +15,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -25,12 +23,10 @@ import java.net.URL
 import java.net.URLEncoder
 
 /**
- * Persistent ForegroundService that maintains a Matrix /sync long-poll loop,
- * showing native notifications for new messages when the main app process is alive
- * but the UI is not in the foreground, and when the app has been swiped away.
+ * ForegroundService that performs a short, one-shot Matrix /sync fetch.
  *
- * Start via [SyncServicePlugin]. Credentials are persisted in SharedPreferences
- * so [BootReceiver] can restart it after a device reboot.
+ * This service is wake-triggered by push pings (UnifiedPush/FCM bridge) and
+ * then fetches message content from Matrix before posting local notifications.
  */
 class MatrixSyncService : Service() {
 
@@ -57,13 +53,20 @@ class MatrixSyncService : Service() {
             return START_NOT_STICKY
         }
 
+        val triggerReason = intent?.getStringExtra(EXTRA_TRIGGER_REASON) ?: "unknown"
         startForeground(NOTIF_ID_STATUS, buildStatusNotification())
 
         serviceScope.launch {
-            runSyncLoop(homeserver, token, userId)
+            try {
+                runSingleSyncFetch(homeserver, token, userId)
+                Log.d(TAG, "One-shot sync completed (reason=$triggerReason)")
+            } finally {
+                stopForegroundCompat()
+                stopSelf(startId)
+            }
         }
 
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -71,44 +74,44 @@ class MatrixSyncService : Service() {
         job.cancel()
     }
 
-    private suspend fun runSyncLoop(homeserver: String, token: String, userId: String) {
+    private suspend fun runSingleSyncFetch(homeserver: String, token: String, userId: String) {
         val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        var since = prefs.getString(KEY_SINCE, null)
-        var isFirstSync = since == null
+        val since = prefs.getString(KEY_SINCE, null)
+        val isFirstSync = since == null
 
-        while (serviceScope.isActive) {
-            try {
-                val url = buildSyncUrl(homeserver.trimEnd('/'), since)
-                val (responseCode, body) = doHttpGet(url, token)
+        try {
+            val url = buildSyncUrl(homeserver.trimEnd('/'), since)
+            val (responseCode, body) = doHttpGet(url, token)
 
-                when (responseCode) {
-                    200 -> {
-                        val json = JSONObject(body ?: "{}")
-                        val nextBatch = json.optString("next_batch").takeIf { it.isNotBlank() }
+            when (responseCode) {
+                200 -> {
+                    val json = JSONObject(body ?: "{}")
+                    val nextBatch = json.optString("next_batch").takeIf { it.isNotBlank() }
 
-                        if (nextBatch != null) {
-                            prefs.edit().putString(KEY_SINCE, nextBatch).apply()
+                    if (nextBatch != null) {
+                        prefs.edit().putString(KEY_SINCE, nextBatch).apply()
 
-                            if (!isFirstSync && !appInForeground) {
-                                processRoomEvents(json, userId)
-                            }
-                            isFirstSync = false
-                            since = nextBatch
+                        if (!isFirstSync && !appInForeground) {
+                            processRoomEvents(json, userId)
                         }
                     }
-                    401, 403 -> {
-                        Log.w(TAG, "Auth error $responseCode — stopping sync")
-                        stopSelf()
-                        return
-                    }
-                    else -> delay(BACKOFF_ERRS_MS)
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Sync error: ${e.message}")
-                delay(BACKOFF_ERRS_MS)
+                401, 403 -> {
+                    Log.w(TAG, "Auth error $responseCode — clearing credentials")
+                    applicationContext
+                        .getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
+                        .edit()
+                        .clear()
+                        .apply()
+                }
+                else -> {
+                    Log.w(TAG, "Sync fetch failed with HTTP $responseCode")
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Sync error: ${e.message}")
         }
     }
 
@@ -116,7 +119,7 @@ class MatrixSyncService : Service() {
         val filter = """{"room":{"timeline":{"limit":10,"types":["m.room.message"]},"state":{"types":[]},"account_data":{"types":[]},"ephemeral":{"types":[]}},"account_data":{"types":[]},"presence":{"types":[]}}"""
         val encodedFilter = URLEncoder.encode(filter, "UTF-8")
         val sinceParam = if (since != null) "&since=${URLEncoder.encode(since, "UTF-8")}" else ""
-        return "$base/_matrix/client/v3/sync?timeout=30000&filter=$encodedFilter$sinceParam"
+        return "$base/_matrix/client/v3/sync?timeout=12000&filter=$encodedFilter$sinceParam"
     }
 
     private suspend fun doHttpGet(urlString: String, token: String): Pair<Int, String?> =
@@ -203,10 +206,19 @@ class MatrixSyncService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_STATUS)
             .setSmallIcon(R.drawable.ic_stat_paarrot)
             .setContentTitle("Paarrot")
-            .setContentText("Connected")
+            .setContentText("Checking for new messages")
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .build()
+    }
+
+    private fun stopForegroundCompat() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
     }
 
     private fun ensureMessageChannel(nm: NotificationManager) {
@@ -225,15 +237,52 @@ class MatrixSyncService : Service() {
         const val EXTRA_TOKEN = "access_token"
         const val EXTRA_USER_ID = "user_id"
         const val EXTRA_DEVICE_ID = "device_id"
+        const val EXTRA_TRIGGER_REASON = "trigger_reason"
         const val PREFS = "matrix_sync_prefs"
         const val KEY_SINCE = "since_token"
+        private const val KEY_LAST_WAKE_MS = "last_wake_ms"
         private const val NOTIF_ID_STATUS = 1001
         private const val CHANNEL_STATUS = "sync_status"
         private const val CHANNEL_MESSAGES = "messages"
-        private const val BACKOFF_ERRS_MS = 10_000L
+        private const val MIN_WAKE_INTERVAL_MS = 7_500L
+        const val ACTION_PUSH_PING = "com.paarrot.app.ACTION_PUSH_PING"
 
         /** Set by [SyncServicePlugin] — true when the Capacitor WebView UI is visible. */
         @Volatile
         var appInForeground = false
+
+        /**
+         * Starts a one-shot sync fetch if credentials are available and the call is not rate-limited.
+         */
+        fun requestSyncFetch(context: Context, reason: String) {
+            val credsPrefs = context.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
+            val homeserver = credsPrefs.getString(EXTRA_HOMESERVER, null) ?: return
+            val token = credsPrefs.getString(EXTRA_TOKEN, null) ?: return
+            val userId = credsPrefs.getString(EXTRA_USER_ID, null) ?: ""
+            val deviceId = credsPrefs.getString(EXTRA_DEVICE_ID, null) ?: ""
+
+            val syncPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            val lastWake = syncPrefs.getLong(KEY_LAST_WAKE_MS, 0L)
+            if (now - lastWake < MIN_WAKE_INTERVAL_MS) {
+                Log.d(TAG, "Skipping wake: rate-limited ($reason)")
+                return
+            }
+            syncPrefs.edit().putLong(KEY_LAST_WAKE_MS, now).apply()
+
+            val intent = Intent(context, MatrixSyncService::class.java).apply {
+                putExtra(EXTRA_HOMESERVER, homeserver)
+                putExtra(EXTRA_TOKEN, token)
+                putExtra(EXTRA_USER_ID, userId)
+                putExtra(EXTRA_DEVICE_ID, deviceId)
+                putExtra(EXTRA_TRIGGER_REASON, reason)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
     }
 }

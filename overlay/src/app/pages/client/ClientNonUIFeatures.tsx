@@ -419,9 +419,9 @@ function MessageNotifications() {
 }
 
 /**
- * Starts the native Android background sync service on login, keeps it
+ * Configures native Android push-ping background sync on login, keeps it
  * informed of foreground state so it doesn't double-fire notifications,
- * and stops it cleanly on unmount (logout).
+ * and clears it cleanly on unmount (logout).
  * Only active on Android Capacitor builds.
  */
 function BackgroundSyncSetup() {
