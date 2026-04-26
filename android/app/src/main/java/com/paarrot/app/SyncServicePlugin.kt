@@ -12,16 +12,30 @@ import com.getcapacitor.annotation.CapacitorPlugin
  * Capacitor plugin that controls [MatrixSyncService] from JS.
  *
  * JS API:
- * - `start({ homeserverUrl, accessToken, userId, deviceId })` — persist/update sync credentials
+ * - `start({ homeserverUrl, accessToken, userId, deviceId })` — persist credentials and register UnifiedPush
  * - `triggerPing({ reason })` — force a one-shot fetch (for testing/manual wake)
- * - `stop()` — clear persisted credentials and stop any in-flight fetch
+ * - `stop()` — clear persisted credentials and unregister UnifiedPush
  * - `setAppForeground({ foreground })` — tell the service whether the app UI is visible
- * - `getStatus()` — returns `{ running: boolean }`
+ * - `getStatus()` — returns current fetch and UnifiedPush state
  */
 @CapacitorPlugin(name = "MatrixBackgroundSync")
 class SyncServicePlugin : Plugin() {
 
-    /** Persists Matrix credentials used later by push-triggered sync fetches. */
+    fun emitUnifiedPushEvent(eventName: String, payload: JSObject) {
+        notifyListeners(eventName, payload, true)
+    }
+
+    override fun load() {
+        super.load()
+        UnifiedPushManager.setPlugin(this)
+    }
+
+    override fun handleOnDestroy() {
+        UnifiedPushManager.clearPlugin(this)
+        super.handleOnDestroy()
+    }
+
+    /** Persists Matrix credentials and starts UnifiedPush registration. */
     @PluginMethod
     fun start(call: PluginCall) {
         val homeserver = call.getString("homeserverUrl")
@@ -37,6 +51,8 @@ class SyncServicePlugin : Plugin() {
             .putString(MatrixSyncService.EXTRA_USER_ID, userId)
             .putString(MatrixSyncService.EXTRA_DEVICE_ID, deviceId)
             .apply()
+
+        UnifiedPushManager.register(context, activity)
 
         call.resolve()
     }
@@ -54,6 +70,7 @@ class SyncServicePlugin : Plugin() {
     fun stop(call: PluginCall) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
         context.stopService(Intent(context, MatrixSyncService::class.java))
+        UnifiedPushManager.unregister(context)
         call.resolve()
     }
 
@@ -76,7 +93,8 @@ class SyncServicePlugin : Plugin() {
         @Suppress("DEPRECATION")
         val running = am.getRunningServices(Int.MAX_VALUE)
             .any { it.service.className == MatrixSyncService::class.java.name }
-        call.resolve(JSObject().apply { put("running", running) })
+        val result = UnifiedPushManager.getStatus(context).apply { put("running", running) }
+        call.resolve(result)
     }
 
     companion object {

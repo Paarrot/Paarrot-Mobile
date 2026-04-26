@@ -40,20 +40,19 @@
             android:exported="false"
             android:stopWithTask="false" />
 
+        <service
+            android:name=".UnifiedPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".PushPingReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
-                <action android:name="com.paarrot.app.ACTION_PUSH_PING" />
             </intent-filter>
         </receiver>
     </application>

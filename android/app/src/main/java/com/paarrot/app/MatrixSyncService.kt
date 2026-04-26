@@ -23,10 +23,8 @@ import java.net.URL
 import java.net.URLEncoder
 
 /**
- * ForegroundService that performs a short, one-shot Matrix /sync fetch.
- *
- * This service is wake-triggered by push pings (UnifiedPush/FCM bridge) and
- * then fetches message content from Matrix before posting local notifications.
+ * ForegroundService that performs a short, one-shot Matrix /sync fetch after
+ * a wake ping from UnifiedPush or a manual diagnostic trigger.
  */
 class MatrixSyncService : Service() {
 
@@ -53,7 +51,7 @@ class MatrixSyncService : Service() {
             return START_NOT_STICKY
         }
 
-        val triggerReason = intent?.getStringExtra(EXTRA_TRIGGER_REASON) ?: "unknown"
+        val triggerReason = intent?.getStringExtra(EXTRA_TRIGGER_REASON) ?: MODE_ONE_SHOT
         startForeground(NOTIF_ID_STATUS, buildStatusNotification())
 
         serviceScope.launch {
@@ -245,7 +243,7 @@ class MatrixSyncService : Service() {
         private const val CHANNEL_STATUS = "sync_status"
         private const val CHANNEL_MESSAGES = "messages"
         private const val MIN_WAKE_INTERVAL_MS = 7_500L
-        const val ACTION_PUSH_PING = "com.paarrot.app.ACTION_PUSH_PING"
+        const val MODE_ONE_SHOT = "one_shot"
 
         /** Set by [SyncServicePlugin] — true when the Capacitor WebView UI is visible. */
         @Volatile
