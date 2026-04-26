@@ -9,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +38,11 @@ class MatrixSyncService : Service() {
 
     /** In-memory cache of MXID → display name to avoid redundant API calls per service run. */
     private val displayNameCache = HashMap<String, String>(16)
+
+    /** In-memory cache of MXID → avatar bitmap (null = no avatar or fetch failed). */
+    private val avatarCache = HashMap<String, Bitmap?>(16)
+
+    private data class UserProfile(val displayName: String, val avatar: Bitmap?)
 
     override fun onBind(intent: Intent?) = null
 
@@ -165,24 +172,45 @@ class MatrixSyncService : Service() {
                 if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
 
                 val content = event.optJSONObject("content") ?: continue
-                val body = content.optString("body").takeIf { it.isNotBlank() } ?: continue
-                val sender = event.optString("sender")
-                val senderName = resolveDisplayName(sender, homeserver, token)
+                val msgtype = content.optString("msgtype")
+                val rawBody = content.optString("body")
+                val body = when (msgtype) {
+                    "m.image"   -> if (rawBody.isNotBlank()) "📷 $rawBody" else "📷 Photo"
+                    "m.video"   -> if (rawBody.isNotBlank()) "🎥 $rawBody" else "🎥 Video"
+                    "m.audio"   -> if (rawBody.isNotBlank()) "🎵 $rawBody" else "🎵 Audio"
+                    "m.file"    -> if (rawBody.isNotBlank()) "📎 $rawBody" else "📎 File"
+                    "m.sticker" -> if (rawBody.isNotBlank()) "🖼️ $rawBody" else "🖼️ Sticker"
+                    else        -> rawBody.takeIf { it.isNotBlank() } ?: continue
+                }
 
-                showMessageNotification(nm, senderName, body)
+                val sender = event.optString("sender")
+                val profile = resolveProfile(sender, homeserver, token)
+
+                // For unencrypted image/sticker messages, try to download a preview bitmap.
+                // Encrypted messages have a `file` object instead of a top-level `url`.
+                val inlineImage: Bitmap? = if (
+                    (msgtype == "m.image" || msgtype == "m.sticker") && !content.has("file")
+                ) {
+                    content.optString("url").takeIf { it.startsWith("mxc://") }
+                        ?.let { mxcToDownloadUrl(it, homeserver) }
+                        ?.let { downloadBitmap(it, token) }
+                } else null
+
+                showMessageNotification(nm, profile.displayName, body, profile.avatar, inlineImage)
             }
         }
     }
 
-    private fun resolveDisplayName(mxid: String, homeserver: String, token: String): String {
-        displayNameCache[mxid]?.let { return it }
+    private fun resolveProfile(mxid: String, homeserver: String, token: String): UserProfile {
+        val cachedName = displayNameCache[mxid]
+        if (cachedName != null) return UserProfile(cachedName, avatarCache[mxid])
 
         val fallback = mxid.substringAfter("@").substringBefore(":")
         return try {
             val encodedId = URLEncoder.encode(mxid, "UTF-8")
-            val url = "$homeserver/_matrix/client/v3/profile/$encodedId/displayname"
+            val url = "$homeserver/_matrix/client/v3/profile/$encodedId"
             val conn = URL(url).openConnection() as HttpURLConnection
-            val name = try {
+            val (displayName, avatarMxc) = try {
                 conn.requestMethod = "GET"
                 conn.setRequestProperty("Authorization", "Bearer $token")
                 conn.setRequestProperty("Accept", "application/json")
@@ -190,22 +218,73 @@ class MatrixSyncService : Service() {
                 conn.readTimeout = 4_000
                 if (conn.responseCode == 200) {
                     val body = conn.inputStream.bufferedReader().readText()
-                    JSONObject(body).optString("displayname").takeIf { it.isNotBlank() } ?: fallback
+                    val obj = JSONObject(body)
+                    val name = obj.optString("displayname").takeIf { it.isNotBlank() } ?: fallback
+                    val mxc = obj.optString("avatar_url").takeIf { it.startsWith("mxc://") }
+                    Pair(name, mxc)
                 } else {
-                    fallback
+                    Pair(fallback, null)
                 }
             } finally {
                 conn.disconnect()
             }
-            displayNameCache[mxid] = name
-            name
+            displayNameCache[mxid] = displayName
+            val avatar = avatarMxc
+                ?.let { mxcToThumbnailUrl(it, homeserver, size = 96) }
+                ?.let { downloadBitmap(it, token) }
+            avatarCache[mxid] = avatar
+            UserProfile(displayName, avatar)
         } catch (e: Exception) {
-            Log.w(TAG, "Could not resolve display name for $mxid: ${e.message}")
-            fallback
+            Log.w(TAG, "Could not resolve profile for $mxid: ${e.message}")
+            displayNameCache[mxid] = fallback
+            avatarCache[mxid] = null
+            UserProfile(fallback, null)
         }
     }
 
-    private fun showMessageNotification(nm: NotificationManager, sender: String, body: String) {
+    private fun mxcToThumbnailUrl(mxcUrl: String, homeserver: String, size: Int): String? {
+        val withoutScheme = mxcUrl.removePrefix("mxc://")
+        val slash = withoutScheme.indexOf('/')
+        if (slash < 0) return null
+        val serverName = withoutScheme.substring(0, slash)
+        val mediaId = withoutScheme.substring(slash + 1)
+        return "$homeserver/_matrix/media/v3/thumbnail/$serverName/$mediaId?width=$size&height=$size&method=crop"
+    }
+
+    private fun mxcToDownloadUrl(mxcUrl: String, homeserver: String): String? {
+        val withoutScheme = mxcUrl.removePrefix("mxc://")
+        val slash = withoutScheme.indexOf('/')
+        if (slash < 0) return null
+        val serverName = withoutScheme.substring(0, slash)
+        val mediaId = withoutScheme.substring(slash + 1)
+        return "$homeserver/_matrix/media/v3/download/$serverName/$mediaId"
+    }
+
+    private fun downloadBitmap(urlString: String, token: String): Bitmap? {
+        return try {
+            val conn = URL(urlString).openConnection() as HttpURLConnection
+            try {
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("Authorization", "Bearer $token")
+                conn.connectTimeout = 5_000
+                conn.readTimeout = 10_000
+                if (conn.responseCode == 200) BitmapFactory.decodeStream(conn.inputStream) else null
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to download bitmap from $urlString: ${e.message}")
+            null
+        }
+    }
+
+    private fun showMessageNotification(
+        nm: NotificationManager,
+        sender: String,
+        body: String,
+        largeIcon: Bitmap? = null,
+        inlineImage: Bitmap? = null,
+    ) {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             ?: Intent(this, MainActivity::class.java)
         val pi = PendingIntent.getActivity(
@@ -213,16 +292,25 @@ class MatrixSyncService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+        val builder = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_paarrot)
             .setContentTitle(sender)
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .build()
 
-        nm.notify(System.currentTimeMillis().toInt(), notification)
+        if (largeIcon != null) builder.setLargeIcon(largeIcon)
+
+        if (inlineImage != null) {
+            builder.setStyle(
+                NotificationCompat.BigPictureStyle()
+                    .bigPicture(inlineImage)
+                    .bigLargeIcon(null as Bitmap?)
+            )
+        }
+
+        nm.notify(System.currentTimeMillis().toInt(), builder.build())
     }
 
     private fun buildStatusNotification(): Notification {
