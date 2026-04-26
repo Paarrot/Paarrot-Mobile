@@ -1,5 +1,6 @@
 import { useAtomValue } from 'jotai';
-import React, { ReactNode, useCallback, useEffect, useRef } from 'react';
+import { useAtom, useSetAtom } from 'jotai';
+import React, { ReactNode, useCallback, useEffect, useRef, useState, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RoomEvent, RoomEventHandlerMap } from 'matrix-js-sdk';
 import { roomToUnreadAtom, unreadEqual, unreadInfoToUnread } from '../../state/room/roomToUnread';
@@ -28,6 +29,8 @@ import { roomToParentsAtom } from '../../state/room/roomToParents';
 import { useSelectedRoom } from '../../hooks/router/useSelectedRoom';
 import { useInboxNotificationsSelected } from '../../hooks/router/useInbox';
 import { useMediaAuthentication } from '../../hooks/useMediaAuthentication';
+import { plainToEditorInput, toPlainText } from '../../components/editor';
+import { ShareRoomPicker } from '../../features/ShareRoomPicker';
 import {
   isTauri,
   isElectron,
@@ -41,6 +44,20 @@ import {
   stopBackgroundSync,
   setAppForegroundState,
 } from '../../utils/backgroundSync';
+import {
+  TUploadItem,
+  roomIdToMsgDraftAtomFamily,
+  roomIdToUploadItemsAtomFamily,
+} from '../../state/room/roomInputDrafts';
+import { encryptFile } from '../../utils/matrix';
+import {
+  AndroidSharePayload,
+  clearPendingAndroidShare,
+  getPendingAndroidShare,
+  isAndroidShareSupported,
+  listenForAndroidShares,
+  materializeSharedFile,
+} from '../../utils/androidShare';
 
 /**
  * Applies the selected emoji style font to the document.
@@ -426,8 +443,13 @@ function MessageNotifications() {
  */
 function BackgroundSyncSetup() {
   const mx = useMatrixClient();
+  // Try to make a simple fetch to verify component is rendering
+  try {
+    fetch('/_matrix/client/v3/sync', { method: 'HEAD' }).catch(() => {});
+  } catch {}
 
   useEffect(() => {
+    console.log('BackgroundSyncSetup: Starting background sync for', mx.getUserId());
     startBackgroundSync(mx);
 
     const onVisibility = () => setAppForegroundState(!document.hidden);
@@ -493,6 +515,135 @@ function TaskbarFlashStopper() {
   return null;
 }
 
+function AndroidShareIntentHandler() {
+  const mx = useMatrixClient();
+  const [isMarkdown] = useSetting(settingsAtom, 'isMarkdown');
+  const [pendingShare, setPendingShare] = useState<AndroidSharePayload | null>(null);
+  const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
+  const [msgDraft, setMsgDraft] = useAtom(roomIdToMsgDraftAtomFamily(pickedRoomId ?? '__android_share__'));
+  const setUploadItems = useSetAtom(roomIdToUploadItemsAtomFamily(pickedRoomId ?? '__android_share__'));
+
+  const applyPendingShare = useCallback(
+    async (share: AndroidSharePayload, roomId: string) => {
+      const room = mx.getRoom(roomId);
+      if (!room) return false;
+
+      const nextParts = [share.subject?.trim(), share.text?.trim()].filter(
+        (value): value is string => !!value
+      );
+      if (nextParts.length > 0) {
+        const existingText = toPlainText(msgDraft, isMarkdown).trim();
+        const nextText = existingText ? `${existingText}\n${nextParts.join('\n')}` : nextParts.join('\n');
+        setMsgDraft(plainToEditorInput(nextText, isMarkdown));
+      }
+
+      if (share.files.length > 0) {
+        const uploadItems: TUploadItem[] = [];
+        for (const sharedFile of share.files) {
+          const originalFile = await materializeSharedFile(sharedFile, share.receivedAt);
+          if (room.hasEncryptionStateEvent()) {
+            const encrypted = await encryptFile(originalFile);
+            uploadItems.push({
+              file: encrypted.file,
+              originalFile,
+              metadata: { markedAsSpoiler: false },
+              encInfo: encrypted.encInfo,
+            });
+            continue;
+          }
+
+          uploadItems.push({
+            file: originalFile,
+            originalFile,
+            metadata: { markedAsSpoiler: false },
+            encInfo: undefined,
+          });
+        }
+
+        setUploadItems({
+          type: 'PUT',
+          item: uploadItems,
+        });
+      }
+
+      await clearPendingAndroidShare();
+      return true;
+    },
+    [isMarkdown, msgDraft, mx, setMsgDraft, setUploadItems]
+  );
+
+  const handlePickRoom = useCallback(
+    (roomId: string) => {
+      setPickedRoomId(roomId);
+      if (!pendingShare) return;
+
+      applyPendingShare(pendingShare, roomId)
+        .then((applied) => {
+          if (applied) {
+            setPendingShare(null);
+            setPickedRoomId(null);
+          }
+        })
+        .catch((err) => {
+          console.error('[AndroidShare] Failed to apply share after pick:', err);
+          setPendingShare(null);
+          setPickedRoomId(null);
+        });
+    },
+    [applyPendingShare, pendingShare]
+  );
+
+  const handleDismiss = useCallback(() => {
+    clearPendingAndroidShare().catch(() => {});
+    setPendingShare(null);
+    setPickedRoomId(null);
+  }, []);
+
+  useEffect(() => {
+    if (!isAndroidShareSupported()) return;
+
+    let mounted = true;
+    let listenerHandle: { remove: () => Promise<void> } | undefined;
+
+    getPendingAndroidShare()
+      .then((share) => {
+        if (mounted && share) {
+          setPendingShare(share);
+        }
+      })
+      .catch((err) => {
+        console.error('[AndroidShare] Failed to get pending share:', err);
+      });
+
+    listenForAndroidShares((share) => {
+      if (mounted) {
+        setPendingShare(share);
+      }
+    })
+      .then((handle) => {
+        listenerHandle = handle;
+      })
+      .catch((err) => {
+        console.error('[AndroidShare] Failed to listen for shares:', err);
+      });
+
+    return () => {
+      mounted = false;
+      void listenerHandle?.remove();
+    };
+  }, []);
+
+  if (!pendingShare) return null;
+
+  return (
+    <ShareRoomPicker
+      share={pendingShare}
+      onPick={handlePickRoom}
+      onDismiss={handleDismiss}
+    />
+  );
+}
+
 type ClientNonUIFeaturesProps = {
   children: ReactNode;
 };
@@ -508,6 +659,7 @@ export function ClientNonUIFeatures({ children }: ClientNonUIFeaturesProps) {
       <BackgroundSyncSetup />
       <PaarrotAPIInitializer />
       <TaskbarFlashStopper />
+      <AndroidShareIntentHandler />
       {children}
     </>
   );

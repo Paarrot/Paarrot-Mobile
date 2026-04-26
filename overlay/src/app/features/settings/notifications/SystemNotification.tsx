@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Text, Switch, Button, color, Spinner } from 'folds';
 import { IPusherRequest } from 'matrix-js-sdk';
 import { SequenceCard } from '../../../components/sequence-card';
@@ -11,6 +11,12 @@ import { useEmailNotifications } from '../../../hooks/useEmailNotifications';
 import { AsyncStatus, useAsyncCallback } from '../../../hooks/useAsyncCallback';
 import { useMatrixClient } from '../../../hooks/useMatrixClient';
 import { isCapacitorNative, requestSystemNotificationPermission } from '../../../utils/tauri';
+import {
+  isBackgroundSyncSupported,
+  getBackgroundSyncStatus,
+  requestResetPushRegistration,
+  triggerBackgroundSyncPing,
+} from '../../../utils/backgroundSync';
 
 function EmailNotification() {
   const mx = useMatrixClient();
@@ -147,6 +153,7 @@ export function SystemNotification() {
           after={<Switch value={isNotificationSounds} onChange={setIsNotificationSounds} />}
         />
       </SequenceCard>
+      {isBackgroundSyncSupported() && <AndroidPushNotifications />}
       <SequenceCard
         className={SequenceCardStyle}
         variant="SurfaceVariant"
@@ -154,6 +161,129 @@ export function SystemNotification() {
         gap="400"
       >
         <EmailNotification />
+      </SequenceCard>
+    </Box>
+  );
+}
+
+type PushStatus = {
+  registered: boolean;
+  distributor: string;
+  endpoint: string;
+};
+
+/** Android-only section showing UnifiedPush registration status and controls. */
+function AndroidPushNotifications() {
+  const [status, setStatus] = useState<PushStatus | undefined>(undefined);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const s = await getBackgroundSyncStatus();
+    setStatus(
+      s
+        ? {
+            registered: s.registered,
+            distributor: s.distributor || '',
+            endpoint: s.endpoint || '',
+          }
+        : undefined
+    );
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const [resetState, reset] = useAsyncCallback(
+    useCallback(async () => {
+      await requestResetPushRegistration();
+      await refresh();
+    }, [refresh])
+  );
+
+  const [pingState, ping] = useAsyncCallback(
+    useCallback(async () => {
+      await triggerBackgroundSyncPing('manual-test');
+    }, [])
+  );
+
+  const isBusy =
+    loading ||
+    resetState.status === AsyncStatus.Loading ||
+    pingState.status === AsyncStatus.Loading;
+
+  return (
+    <Box direction="Column" gap="100">
+      <Text size="L400">Android Push (UnifiedPush)</Text>
+      <SequenceCard
+        className={SequenceCardStyle}
+        variant="SurfaceVariant"
+        direction="Column"
+        gap="400"
+      >
+        <SettingTile
+          title="Background Notifications"
+          description={
+            loading ? (
+              'Loading status…'
+            ) : status === undefined ? (
+              <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+                Failed to read push status.
+              </Text>
+            ) : status.registered ? (
+              <>
+                <Text as="span" size="T200">
+                  {`Distributor: ${status.distributor || 'unknown'}`}
+                </Text>
+              </>
+            ) : (
+              <Text as="span" style={{ color: color.Warning?.Main ?? color.Critical.Main }} size="T200">
+                Not registered. Tap &quot;Reset&quot; to choose a distributor app.
+              </Text>
+            )
+          }
+          after={loading ? <Spinner variant="Secondary" /> : undefined}
+        />
+        <SettingTile
+          title="Change Distributor"
+          description="Re-open the UnifiedPush distributor selection dialog."
+          after={
+            <Button
+              size="300"
+              radii="300"
+              variant="Secondary"
+              disabled={isBusy}
+              onClick={() => void reset()}
+            >
+              {resetState.status === AsyncStatus.Loading ? (
+                <Spinner variant="Secondary" size="200" />
+              ) : (
+                <Text size="B300">Reset</Text>
+              )}
+            </Button>
+          }
+        />
+        <SettingTile
+          title="Test Notification"
+          description="Trigger a test push ping to verify the pipeline works."
+          after={
+            <Button
+              size="300"
+              radii="300"
+              variant="Secondary"
+              disabled={isBusy}
+              onClick={() => void ping()}
+            >
+              {pingState.status === AsyncStatus.Loading ? (
+                <Spinner variant="Secondary" size="200" />
+              ) : (
+                <Text size="B300">Send Test</Text>
+              )}
+            </Button>
+          }
+        />
       </SequenceCard>
     </Box>
   );

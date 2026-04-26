@@ -30,6 +30,14 @@ const STASH_FLAG = join(ROOT, '.cinny-stash-pending');
 const cinnyStatus = execSync('git status --porcelain', { cwd: CINNY, encoding: 'utf8' });
 if (cinnyStatus.trim()) {
   console.log('[apply-overlay] Stashing pre-existing cinny changes...');
+  // Ensure android/ junction is excluded from the cinny git view — otherwise
+  // `git stash -u` would traverse the junction into the root android/ directory
+  // and delete files there when the stash is created.
+  const cinnyExclude = join(CINNY, '.git', 'info', 'exclude');
+  const excludeContent = existsSync(cinnyExclude) ? readFileSync(cinnyExclude, 'utf8') : '';
+  if (!excludeContent.includes('android/')) {
+    writeFileSync(cinnyExclude, excludeContent + (excludeContent.endsWith('\n') || !excludeContent ? '' : '\n') + 'android/\n', 'utf8');
+  }
   execSync('git stash push -u -m "pre-overlay stash"', { cwd: CINNY, stdio: 'inherit' });
   writeFileSync(STASH_FLAG, '1', 'utf8');
   console.log('[apply-overlay] Stash saved.');
@@ -120,21 +128,19 @@ if (!existsSync(androidJunction)) {
   console.log(`  android/ link already exists, skipping`);
 }
 
-// 8. Sync version from root package.json into android/app/build.gradle
-console.log('[apply-overlay] Syncing version into build.gradle...');
-const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-const version = rootPkg.version ?? '1.0.0';
-const parts = version.split('.').map(Number);
-// versionCode: major*10000 + minor*100 + patch  (e.g. 4.11.78 -> 41178)
-const versionCode = (parts[0] ?? 0) * 10000 + (parts[1] ?? 0) * 100 + (parts[2] ?? 0);
+// 8. Sync time-based version into android/app/build.gradle
+console.log('[apply-overlay] Syncing time-based version into build.gradle...');
+const buildTimestampMs = Date.now();
+const versionCode = Math.floor(buildTimestampMs / 1000);
+const versionName = new Date(buildTimestampMs).toISOString().replace('T', '.').replaceAll(':', '').replace('Z', '');
 
 const buildGradlePath = join(androidTarget, 'app', 'build.gradle');
 let buildGradle = readFileSync(buildGradlePath, 'utf8');
 buildGradle = buildGradle
   .replace(/versionCode\s+\d+/, `versionCode ${versionCode}`)
-  .replace(/versionName\s+"[^"]+"/, `versionName "${version}"`);
+  .replace(/versionName\s+"[^"]+"/, `versionName "${versionName}"`);
 writeFileSync(buildGradlePath, buildGradle, 'utf8');
-console.log(`  versionName "${version}", versionCode ${versionCode}`);
+console.log(`  versionName "${versionName}", versionCode ${versionCode}`);
 
 // 9. Write android/local.properties with the current machine's Android SDK path
 const androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT;

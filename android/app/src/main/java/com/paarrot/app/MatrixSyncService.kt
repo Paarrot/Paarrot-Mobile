@@ -34,6 +34,9 @@ class MatrixSyncService : Service() {
     /** Event IDs already shown as notifications this session — prevents duplicates on restart. */
     private val shownEventIds = HashSet<String>(64)
 
+    /** In-memory cache of MXID → display name to avoid redundant API calls per service run. */
+    private val displayNameCache = HashMap<String, String>(16)
+
     override fun onBind(intent: Intent?) = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -140,6 +143,9 @@ class MatrixSyncService : Service() {
         }
 
     private fun processRoomEvents(sync: JSONObject, myUserId: String) {
+        val prefs = applicationContext.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
+        val homeserver = prefs.getString(EXTRA_HOMESERVER, null)?.trimEnd('/') ?: return
+        val token = prefs.getString(EXTRA_TOKEN, null) ?: return
         val joinedRooms = sync.optJSONObject("rooms")?.optJSONObject("join") ?: return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureMessageChannel(nm)
@@ -161,10 +167,41 @@ class MatrixSyncService : Service() {
                 val content = event.optJSONObject("content") ?: continue
                 val body = content.optString("body").takeIf { it.isNotBlank() } ?: continue
                 val sender = event.optString("sender")
-                val senderName = sender.substringAfter("@").substringBefore(":")
+                val senderName = resolveDisplayName(sender, homeserver, token)
 
                 showMessageNotification(nm, senderName, body)
             }
+        }
+    }
+
+    private fun resolveDisplayName(mxid: String, homeserver: String, token: String): String {
+        displayNameCache[mxid]?.let { return it }
+
+        val fallback = mxid.substringAfter("@").substringBefore(":")
+        return try {
+            val encodedId = URLEncoder.encode(mxid, "UTF-8")
+            val url = "$homeserver/_matrix/client/v3/profile/$encodedId/displayname"
+            val conn = URL(url).openConnection() as HttpURLConnection
+            val name = try {
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("Authorization", "Bearer $token")
+                conn.setRequestProperty("Accept", "application/json")
+                conn.connectTimeout = 4_000
+                conn.readTimeout = 4_000
+                if (conn.responseCode == 200) {
+                    val body = conn.inputStream.bufferedReader().readText()
+                    JSONObject(body).optString("displayname").takeIf { it.isNotBlank() } ?: fallback
+                } else {
+                    fallback
+                }
+            } finally {
+                conn.disconnect()
+            }
+            displayNameCache[mxid] = name
+            name
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not resolve display name for $mxid: ${e.message}")
+            fallback
         }
     }
 

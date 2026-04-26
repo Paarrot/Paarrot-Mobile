@@ -7,7 +7,7 @@ type UnifiedPushStatus = {
   instance: string;
   registered: boolean;
   distributor: string;
-  distributors: string[];
+  distributors: string[] | string;
 };
 
 type UnifiedPushEndpointEvent = {
@@ -36,6 +36,8 @@ interface MatrixBackgroundSyncPlugin {
   }): Promise<void>;
   /** Trigger a one-shot fetch as if a push ping arrived. */
   triggerPing(options: { reason?: string }): Promise<void>;
+  /** Re-open distributor setup flow and retry registration. */
+  requestDistributorSetup(): Promise<{ success: boolean }>;
   /** Stop any in-flight fetch, clear credentials, and unregister UnifiedPush. */
   stop(): Promise<void>;
   /**
@@ -112,6 +114,24 @@ const clearStoredPusherState = (userId: string | null, deviceId: string | null):
   window.localStorage.removeItem(getStoredPusherKey(userId, deviceId));
 };
 
+const normalizeDistributors = (raw: UnifiedPushStatus['distributors']): string[] => {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return [];
+
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === '[]') return [];
+
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    return trimmed
+      .slice(1, -1)
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  return [trimmed];
+};
+
 const resolveUnifiedPushGateway = async (endpoint: string): Promise<string> => {
   try {
     const discoveryUrl = new URL(endpoint);
@@ -143,14 +163,25 @@ class AndroidUnifiedPushManager {
 
   private listenersReady = false;
 
+  private distributorSetupAttempted = false;
+
+  private distributorPromptShown = false;
+
   /** Start native UnifiedPush registration and synchronize the Matrix pusher. */
   async start(mx: MatrixClient): Promise<void> {
-    if (!isBackgroundSyncSupported()) return;
+    console.log('[BackgroundSync] start() called, platform:', Capacitor.getPlatform(), 'isNative:', Capacitor.isNativePlatform());
+    
+    if (!isBackgroundSyncSupported()) {
+      console.log('[BackgroundSync] Background sync not supported on this platform');
+      return;
+    }
 
     const homeserverUrl = mx.getHomeserverUrl();
     const accessToken = mx.getAccessToken();
     const userId = mx.getUserId();
     const deviceId = mx.getDeviceId();
+
+    console.log('[BackgroundSync] Credentials check:', { userId, deviceId, hasToken: !!accessToken, hasUrl: !!homeserverUrl });
 
     if (!homeserverUrl || !accessToken || !userId) {
       console.warn('[BackgroundSync] Missing credentials, not starting');
@@ -158,16 +189,26 @@ class AndroidUnifiedPushManager {
     }
 
     this.client = mx;
+    this.distributorSetupAttempted = false;
+    this.distributorPromptShown = false;
     await this.ensureListeners();
 
-    await MatrixBackgroundSync.start({
-      homeserverUrl,
-      accessToken,
-      userId,
-      deviceId: deviceId ?? '',
-    });
+    try {
+      console.log('[BackgroundSync] Calling plugin.start()...');
+      await MatrixBackgroundSync.start({
+        homeserverUrl,
+        accessToken,
+        userId,
+        deviceId: deviceId ?? '',
+      });
+      console.log('[BackgroundSync] plugin.start() completed');
+    } catch (err) {
+      console.error('[BackgroundSync] plugin.start() failed:', err);
+      throw err;
+    }
 
     await this.syncExistingEndpoint();
+    await this.ensureDistributorPromptFromStatus();
     console.log('[BackgroundSync] UnifiedPush registration requested');
   }
 
@@ -227,6 +268,67 @@ class AndroidUnifiedPushManager {
   /** Log native registration failures so the missing distributor path is visible. */
   private handleRegistrationFailed(event: UnifiedPushRegistrationFailedEvent): void {
     console.warn('[BackgroundSync] UnifiedPush registration failed:', event.reason);
+
+    if (event.reason !== 'ACTION_REQUIRED' || this.distributorSetupAttempted) {
+      return;
+    }
+
+    this.distributorSetupAttempted = true;
+    void this.tryRequestDistributorSetup();
+  }
+
+  /** Re-opens distributor selection once after ACTION_REQUIRED and logs actionable status. */
+  private async tryRequestDistributorSetup(): Promise<void> {
+    try {
+      const setupResult = await MatrixBackgroundSync.requestDistributorSetup();
+      console.warn('[BackgroundSync] requestDistributorSetup result:', setupResult);
+      const status = await this.safeGetStatus();
+      console.warn('[BackgroundSync] UnifiedPush status after setup attempt:', status);
+      const distributors = normalizeDistributors(status?.distributors ?? []);
+      if (distributors.length === 0) {
+        console.error(
+          '[BackgroundSync] No UnifiedPush distributor installed. Install one (for example ntfy) to enable Android background notifications.'
+        );
+        this.showNoDistributorPrompt();
+      }
+    } catch (err) {
+      console.warn('[BackgroundSync] requestDistributorSetup failed:', err);
+    }
+  }
+
+  /** Fallback check so users still get prompted even when ACTION_REQUIRED event is missed. */
+  private async ensureDistributorPromptFromStatus(): Promise<void> {
+    const status = await this.safeGetStatus();
+    if (!status) return;
+
+    const distributors = normalizeDistributors(status.distributors);
+    if (!status.registered && distributors.length === 0) {
+      console.error(
+        '[BackgroundSync] No UnifiedPush distributor installed. Install one (for example ntfy) to enable Android background notifications.'
+      );
+      this.showNoDistributorPrompt();
+    }
+  }
+
+  /** Show a one-time actionable prompt when no distributor app is installed. */
+  private showNoDistributorPrompt(): void {
+    if (this.distributorPromptShown) return;
+    this.distributorPromptShown = true;
+
+    const message =
+      'Android background notifications need a UnifiedPush distributor app. Install one (for example ntfy), then reopen Paarrot.';
+    const docsUrl = 'https://unifiedpush.org/users/distributors/';
+
+    if (typeof window === 'undefined') return;
+
+    try {
+      const openDocs = window.confirm(`${message}\n\nOpen distributor list now?`);
+      if (openDocs) {
+        window.open(docsUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch {
+      window.alert(message);
+    }
   }
 
   /** Install plugin listeners once for the active Matrix client. */
@@ -235,7 +337,9 @@ class AndroidUnifiedPushManager {
 
     this.listenerHandles = [
       await MatrixBackgroundSync.addListener('unifiedPushNewEndpoint', (event) => {
-        void this.handleNewEndpoint(event);
+        void this.handleNewEndpoint(event).catch((err) => {
+          console.error('[BackgroundSync] handleNewEndpoint failed:', err);
+        });
       }),
       await MatrixBackgroundSync.addListener('unifiedPushUnregistered', (event) => {
         void this.handleUnregistered(event);
@@ -260,6 +364,7 @@ class AndroidUnifiedPushManager {
     if (!client) return;
 
     const status = await this.safeGetStatus();
+    console.log('[BackgroundSync] Native status before pusher sync:', status);
     if (status?.registered && status.endpoint) {
       await this.upsertPusher(client, status.endpoint);
     }
@@ -272,20 +377,40 @@ class AndroidUnifiedPushManager {
     const appId = buildPusherAppId(deviceId);
     const gatewayUrl = await resolveUnifiedPushGateway(endpoint);
 
-    await mx.setPusher({
-      kind: 'http',
-      app_id: appId,
-      pushkey: endpoint,
-      app_display_name: 'Paarrot',
-      device_display_name: deviceId ?? 'Android',
-      lang: 'en',
-      data: {
-        url: gatewayUrl,
-        format: 'event_id_only',
-      },
-      append: false,
-      device_id: deviceId ?? undefined,
-    } as unknown as IPusherRequest);
+    console.log('[BackgroundSync] Upserting Matrix pusher', {
+      appId,
+      endpoint,
+      gatewayUrl,
+      deviceId,
+      userId,
+    });
+
+    try {
+      await mx.setPusher({
+        kind: 'http',
+        app_id: appId,
+        pushkey: endpoint,
+        app_display_name: 'Paarrot',
+        device_display_name: deviceId ?? 'Android',
+        lang: 'en',
+        data: {
+          url: gatewayUrl,
+          format: 'event_id_only',
+        },
+        append: false,
+        device_id: deviceId ?? undefined,
+      } as unknown as IPusherRequest);
+
+      const pushers = (await mx.getPushers())?.pushers ?? [];
+      const thisPusher = pushers.find((p) => p.pushkey === endpoint && p.app_id === appId);
+      console.log('[BackgroundSync] Matrix pusher upserted successfully', {
+        totalPushers: pushers.length,
+        foundThisPusher: Boolean(thisPusher),
+      });
+    } catch (err) {
+      console.error('[BackgroundSync] Matrix pusher upsert failed:', err);
+      throw err;
+    }
 
     saveStoredPusherState(userId, deviceId, { endpoint, appId });
   }
@@ -357,5 +482,37 @@ export const setAppForegroundState = async (foreground: boolean): Promise<void> 
     await MatrixBackgroundSync.setAppForeground({ foreground });
   } catch (err) {
     console.warn('[BackgroundSync] setAppForeground failed:', err);
+  }
+};
+
+/**
+ * Re-opens the UnifiedPush distributor selection dialog.
+ * Allows users to re-select or change their push notification distributor without terminal access.
+ * Useful when the current endpoint becomes unavailable.
+ */
+export const requestResetPushRegistration = async (): Promise<{ success: boolean }> => {
+  if (!isBackgroundSyncSupported()) {
+    console.warn('[BackgroundSync] Background sync not supported on this platform');
+    return { success: false };
+  }
+
+  try {
+    const result = await MatrixBackgroundSync.requestDistributorSetup();
+    console.log('[BackgroundSync] requestDistributorSetup completed:', result);
+    return result ?? { success: false };
+  } catch (err) {
+    console.error('[BackgroundSync] requestDistributorSetup failed:', err);
+    return { success: false };
+  }
+};
+
+/** Returns the current native UnifiedPush status, or undefined if unavailable. */
+export const getBackgroundSyncStatus = async (): Promise<UnifiedPushStatus | undefined> => {
+  if (!isBackgroundSyncSupported()) return undefined;
+  try {
+    return await MatrixBackgroundSync.getStatus();
+  } catch (err) {
+    console.warn('[BackgroundSync] getStatus failed:', err);
+    return undefined;
   }
 };
