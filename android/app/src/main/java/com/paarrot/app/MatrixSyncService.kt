@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.media.AudioAttributes
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.util.Log
 import android.graphics.Bitmap
@@ -346,10 +348,20 @@ class MatrixSyncService : Service() {
 
     private fun ensureMessageChannel(nm: NotificationManager) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val soundUri = Uri.parse("android.resource://$packageName/${R.raw.paarrot_notification}")
             val channel = NotificationChannel(
                 CHANNEL_MESSAGES, "Messages",
                 NotificationManager.IMPORTANCE_HIGH,
-            ).apply { description = "Matrix message notifications" }
+            ).apply {
+                description = "Matrix message notifications"
+                setSound(
+                    soundUri,
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+            }
             nm.createNotificationChannel(channel)
         }
     }
@@ -366,7 +378,7 @@ class MatrixSyncService : Service() {
         private const val KEY_LAST_WAKE_MS = "last_wake_ms"
         private const val NOTIF_ID_STATUS = 1001
         private const val CHANNEL_STATUS = "sync_status"
-        private const val CHANNEL_MESSAGES = "messages"
+        private const val CHANNEL_MESSAGES = "messages_paarrot"
         private const val MIN_WAKE_INTERVAL_MS = 7_500L
         const val MODE_ONE_SHOT = "one_shot"
 
