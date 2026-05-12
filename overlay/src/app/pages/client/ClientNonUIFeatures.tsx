@@ -518,11 +518,7 @@ function TaskbarFlashStopper() {
 function AndroidShareIntentHandler() {
   const mx = useMatrixClient();
   const navigate = useNavigate();
-  const [isMarkdown] = useSetting(settingsAtom, 'isMarkdown');
   const [pendingShare, setPendingShare] = useState<AndroidSharePayload | null>(null);
-  const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
-  const [msgDraft, setMsgDraft] = useAtom(roomIdToMsgDraftAtomFamily(pickedRoomId ?? '__android_share__'));
-  const setUploadItems = useSetAtom(roomIdToUploadItemsAtomFamily(pickedRoomId ?? '__android_share__'));
   const mDirects = useAtomValue(mDirectAtom);
   const roomToParents = useAtomValue(roomToParentsAtom);
 
@@ -531,60 +527,81 @@ function AndroidShareIntentHandler() {
       const room = mx.getRoom(roomId);
       if (!room) return false;
 
+      // Send text message if present
       const nextParts = [share.subject?.trim(), share.text?.trim()].filter(
         (value): value is string => !!value
       );
       if (nextParts.length > 0) {
-        const existingText = toPlainText(msgDraft, isMarkdown).trim();
-        const nextText = existingText ? `${existingText}\n${nextParts.join('\n')}` : nextParts.join('\n');
-        setMsgDraft(plainToEditorInput(nextText, isMarkdown));
+        const textContent = {
+          msgtype: 'm.text' as const,
+          body: nextParts.join('\n'),
+        };
+        await mx.sendMessage(roomId, textContent);
       }
 
+      // Upload and send files if present
       if (share.files.length > 0) {
-        const uploadItems: TUploadItem[] = [];
         for (const sharedFile of share.files) {
           const originalFile = await materializeSharedFile(sharedFile, share.receivedAt);
+          
+          let fileToUpload = originalFile;
+          let encInfo: any = undefined;
+
           if (room.hasEncryptionStateEvent()) {
             const encrypted = await encryptFile(originalFile);
-            uploadItems.push({
-              file: encrypted.file,
-              originalFile,
-              metadata: { markedAsSpoiler: false },
-              encInfo: encrypted.encInfo,
-            });
-            continue;
+            fileToUpload = encrypted.file;
+            encInfo = encrypted.encInfo;
           }
 
-          uploadItems.push({
-            file: originalFile,
-            originalFile,
-            metadata: { markedAsSpoiler: false },
-            encInfo: undefined,
-          });
-        }
+          // Upload file
+          const uploadResult = await mx.uploadContent(fileToUpload);
+          const mxc = uploadResult?.content_uri;
+          if (!mxc) continue;
 
-        setUploadItems({
-          type: 'PUT',
-          item: uploadItems,
-        });
+          // Determine message type and send
+          const fileType = originalFile.type;
+          let msgtype = 'm.file' as const;
+          if (fileType.startsWith('image/')) msgtype = 'm.image' as const;
+          else if (fileType.startsWith('video/')) msgtype = 'm.video' as const;
+          else if (fileType.startsWith('audio/')) msgtype = 'm.audio' as const;
+
+          const fileContent: any = {
+            msgtype,
+            body: originalFile.name,
+            filename: originalFile.name,
+            info: {
+              mimetype: originalFile.type,
+              size: originalFile.size,
+            },
+          };
+
+          if (encInfo) {
+            fileContent.file = {
+              ...encInfo,
+              url: mxc,
+            };
+          } else {
+            fileContent.url = mxc;
+          }
+
+          await mx.sendMessage(roomId, fileContent);
+        }
       }
 
       await clearPendingAndroidShare();
       return true;
     },
-    [isMarkdown, msgDraft, mx, setMsgDraft, setUploadItems]
+    [mx]
   );
 
   const handlePickRoom = useCallback(
     (roomId: string) => {
-      setPickedRoomId(roomId);
       if (!pendingShare) return;
 
       applyPendingShare(pendingShare, roomId)
         .then((applied) => {
           if (applied) {
             setPendingShare(null);
-            setPickedRoomId(null);
             
             // Navigate to the selected room
             const isDirect = mDirects.has(roomId);
@@ -604,7 +621,6 @@ function AndroidShareIntentHandler() {
         .catch((err) => {
           console.error('[AndroidShare] Failed to apply share after pick:', err);
           setPendingShare(null);
-          setPickedRoomId(null);
         });
     },
     [applyPendingShare, pendingShare, navigate, mDirects, roomToParents]
@@ -613,7 +629,6 @@ function AndroidShareIntentHandler() {
   const handleDismiss = useCallback(() => {
     clearPendingAndroidShare().catch(() => {});
     setPendingShare(null);
-    setPickedRoomId(null);
   }, []);
 
   useEffect(() => {
