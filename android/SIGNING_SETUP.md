@@ -1,5 +1,5 @@
 # Android App Signing Setup
-
+ 
 ## Why This Matters
 Android requires apps to be signed with the same key for updates to work. Without proper signing, users cannot update your app - they must uninstall and reinstall, losing all data.
 
