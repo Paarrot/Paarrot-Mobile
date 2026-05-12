@@ -517,11 +517,14 @@ function TaskbarFlashStopper() {
 
 function AndroidShareIntentHandler() {
   const mx = useMatrixClient();
+  const navigate = useNavigate();
   const [isMarkdown] = useSetting(settingsAtom, 'isMarkdown');
   const [pendingShare, setPendingShare] = useState<AndroidSharePayload | null>(null);
   const [pickedRoomId, setPickedRoomId] = useState<string | null>(null);
   const [msgDraft, setMsgDraft] = useAtom(roomIdToMsgDraftAtomFamily(pickedRoomId ?? '__android_share__'));
   const setUploadItems = useSetAtom(roomIdToUploadItemsAtomFamily(pickedRoomId ?? '__android_share__'));
+  const mDirects = useAtomValue(mDirectAtom);
+  const roomToParents = useAtomValue(roomToParentsAtom);
 
   const applyPendingShare = useCallback(
     async (share: AndroidSharePayload, roomId: string) => {
@@ -582,6 +585,20 @@ function AndroidShareIntentHandler() {
           if (applied) {
             setPendingShare(null);
             setPickedRoomId(null);
+            
+            // Navigate to the selected room
+            const isDirect = mDirects.has(roomId);
+            if (isDirect) {
+              navigate(getDirectRoomPath(roomId));
+            } else {
+              const parents = roomToParents.get(roomId);
+              const parent = parents && parents.length > 0 ? parents[0] : undefined;
+              if (parent) {
+                navigate(getSpaceRoomPath(parent, roomId));
+              } else {
+                navigate(getHomeRoomPath(roomId));
+              }
+            }
           }
         })
         .catch((err) => {
@@ -590,7 +607,7 @@ function AndroidShareIntentHandler() {
           setPickedRoomId(null);
         });
     },
-    [applyPendingShare, pendingShare]
+    [applyPendingShare, pendingShare, navigate, mDirects, roomToParents]
   );
 
   const handleDismiss = useCallback(() => {
