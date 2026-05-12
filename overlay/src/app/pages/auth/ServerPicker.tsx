@@ -1,4 +1,5 @@
 import React, {
+  ChangeEventHandler,
   FocusEventHandler,
   KeyboardEventHandler,
   MouseEventHandler,
@@ -21,6 +22,7 @@ import {
 } from 'folds';
 import FocusTrap from 'focus-trap-react';
 
+import { useDebounce } from '../../hooks/useDebounce';
 import { stopPropagation } from '../../utils/keyboard';
 
 export function ServerPicker({
@@ -48,6 +50,13 @@ export function ServerPicker({
       serverInputRef.current.value = server;
     }
   }, [server]);
+
+  const debounceServerSelect = useDebounce(onServerChange, { wait: 700 });
+
+  const handleServerChange: ChangeEventHandler<HTMLInputElement> = (evt) => {
+    const inputServer = evt.target.value.trim();
+    if (inputServer) debounceServerSelect(inputServer);
+  };
 
   const handleBlur: FocusEventHandler<HTMLInputElement> = (evt) => {
     const inputServer = evt.target.value.trim();
@@ -88,6 +97,7 @@ export function ServerPicker({
       variant={allowCustomServer ? 'Background' : 'Surface'}
       outlined
       defaultValue={server}
+      onChange={handleServerChange}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
       size="500"
