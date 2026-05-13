@@ -1,18 +1,21 @@
 import { useAtomValue } from 'jotai';
-import React, { ChangeEventHandler, useCallback, useMemo, useRef } from 'react';
+import React, { ChangeEventHandler, useCallback, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import FocusTrap from 'focus-trap-react';
 import {
   Avatar,
   Box,
+  Button,
   Header,
   Icon,
   IconButton,
   Icons,
   Input,
   MenuItem,
+  Modal,
   Overlay,
   OverlayBackdrop,
+  OverlayCenter,
   Scroll,
   Text,
   config,
@@ -60,6 +63,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const mx = useMatrixClient();
   const useAuthentication = useMediaAuthentication();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [confirmRoomId, setConfirmRoomId] = useState<string | null>(null);
 
   const mDirects = useAtomValue(mDirectAtom);
   const allRoomsSet = useAllJoinedRoomsSet();
@@ -105,9 +109,19 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const handleRoomClick: React.MouseEventHandler<HTMLButtonElement> = (evt) => {
     const roomId = evt.currentTarget.getAttribute('data-room-id');
     if (roomId) {
-      onPick(roomId);
+      setConfirmRoomId(roomId);
     }
   };
+
+  const handleConfirm = useCallback(() => {
+    if (confirmRoomId) {
+      onPick(confirmRoomId);
+    }
+  }, [confirmRoomId, onPick]);
+
+  const handleCancelConfirm = useCallback(() => {
+    setConfirmRoomId(null);
+  }, []);
 
   const previewText = share.text?.slice(0, 80) ?? share.subject?.slice(0, 80);
   const fileCount = share.files.length;
@@ -247,6 +261,50 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
           </Scroll>
         </Box>
       </FocusTrap>
+
+      {confirmRoomId && (() => {
+        const room = getRoom(confirmRoomId);
+        const roomName = room?.name ?? confirmRoomId;
+        const isDm = mDirects.has(confirmRoomId);
+        return (
+          <OverlayCenter>
+            <FocusTrap
+              focusTrapOptions={{
+                initialFocus: false,
+                onDeactivate: handleCancelConfirm,
+                escapeDeactivates: stopPropagation,
+              }}
+            >
+              <Modal size="300">
+                <Box direction="Column" gap="400" style={{ padding: config.space.S400 }}>
+                  <Box direction="Column" gap="200">
+                    <Text size="H4">Share to {isDm ? 'Person' : 'Room'}?</Text>
+                    <Text size="T300" priority="300">
+                      Send to <strong>{roomName}</strong>?
+                    </Text>
+                  </Box>
+                  <Box gap="200" justifyContent="End">
+                    <Button
+                      onClick={handleCancelConfirm}
+                      variant="Secondary"
+                      size="400"
+                    >
+                      <Text size="B400">Cancel</Text>
+                    </Button>
+                    <Button
+                      onClick={handleConfirm}
+                      variant="Primary"
+                      size="400"
+                    >
+                      <Text size="B400">Share</Text>
+                    </Button>
+                  </Box>
+                </Box>
+              </Modal>
+            </FocusTrap>
+          </OverlayCenter>
+        );
+      })()}
     </Overlay>
   );
 }
