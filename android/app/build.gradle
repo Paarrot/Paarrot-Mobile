@@ -27,8 +27,8 @@ android {
         applicationId "com.paarrot.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1778632712
-        versionName "2026-05-13.003832.344"
+        versionCode 1778632862
+        versionName "2026-05-13.004102.796"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

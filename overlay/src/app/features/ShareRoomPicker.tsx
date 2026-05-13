@@ -280,7 +280,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
                 escapeDeactivates: stopPropagation,
               }}
             >
-              <Modal size="300" style={{ maxWidth: '280px', maxHeight: 'fit-content' }}>
+              <Modal style={{ maxWidth: '280px' }}>
                 <Box direction="Column" gap="100" style={{ padding: config.space.S300 }}>
                   <Box direction="Column" gap="100">
                     <Text size="H4">Share to {isDm ? 'Person' : 'Room'}?</Text>
