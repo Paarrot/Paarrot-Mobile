@@ -127,7 +127,8 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const fileCount = share.files.length;
 
   return (
-    <Overlay open backdrop={<OverlayBackdrop />}>
+    <>
+      <Overlay open>
       <FocusTrap
         focusTrapOptions={{
           initialFocus: false,
@@ -144,16 +145,17 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
             inset: 0,
             zIndex: 999,
             backgroundColor: '#1a1d23',
+            paddingTop: '60px',
           }}
         >
           <Header
             size="500"
-            style={{ padding: config.space.S400, paddingTop: '60px' }}
+            style={{ padding: config.space.S400 }}
           >
-            <Box grow="Yes" direction="Column" gap="100">
+            <Box grow="Yes" direction="Column" gap="100" style={{ minWidth: 0, maxWidth: '80%' }}>
               <Text size="H4">Share to Room</Text>
               {(previewText || fileCount > 0) && (
-                <Text size="T200" priority="300" style={{ opacity: 0.7 }}>
+                <Text size="T200" priority="300" style={{ opacity: 0.7, wordBreak: 'break-word', whiteSpace: 'normal' }}>
                   {previewText
                     ? `"${previewText}${(share.text?.length ?? 0) > 80 ? '…' : ''}"`
                     : `${fileCount} file${fileCount !== 1 ? 's' : ''}`}
@@ -170,6 +172,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
           <Box
             style={{
               padding: config.space.S200,
+              paddingTop: config.space.S300,
             }}
           >
             <Input
@@ -185,7 +188,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
           </Box>
 
           <Scroll ref={scrollRef} size="300" hideTrack style={{ flex: 1, minHeight: 0 }}>
-            <Box style={{ padding: config.space.S300, paddingTop: config.space.S300 }} direction="Column">
+            <Box style={{ padding: config.space.S300 }} direction="Column">
               {vItems.length === 0 && (
                 <Box
                   style={{ padding: `${config.space.S700} 0` }}
@@ -261,13 +264,15 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
           </Scroll>
         </Box>
       </FocusTrap>
+    </Overlay>
 
-      {confirmRoomId && (() => {
-        const room = getRoom(confirmRoomId);
-        const roomName = room?.name ?? confirmRoomId;
-        const isDm = mDirects.has(confirmRoomId);
-        return (
-          <OverlayCenter style={{ zIndex: 9999 }}>
+    {confirmRoomId && (() => {
+      const room = getRoom(confirmRoomId);
+      const roomName = room?.name ?? confirmRoomId;
+      const isDm = mDirects.has(confirmRoomId);
+      return (
+        <Overlay open backdrop={<OverlayBackdrop />}>
+          <OverlayCenter>
             <FocusTrap
               focusTrapOptions={{
                 initialFocus: false,
@@ -275,9 +280,9 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
                 escapeDeactivates: stopPropagation,
               }}
             >
-              <Modal size="300" style={{ zIndex: 9999 }}>
-                <Box direction="Column" gap="100" style={{ padding: config.space.S400 }}>
-                  <Box direction="Column" gap="200">
+              <Modal size="300" style={{ maxWidth: '280px', maxHeight: 'fit-content' }}>
+                <Box direction="Column" gap="100" style={{ padding: config.space.S300 }}>
+                  <Box direction="Column" gap="100">
                     <Text size="H4">Share to {isDm ? 'Person' : 'Room'}?</Text>
                     <Text size="T300" priority="300">
                       Send to <strong>{roomName}</strong>?
@@ -303,8 +308,9 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
               </Modal>
             </FocusTrap>
           </OverlayCenter>
-        );
-      })()}
-    </Overlay>
+        </Overlay>
+      );
+    })()}
+    </>
   );
 }
