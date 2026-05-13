@@ -1,5 +1,5 @@
 import { useAtomValue } from 'jotai';
-import React, { ChangeEventHandler, useCallback, useMemo, useRef, useState } from 'react';
+import React, { ChangeEventHandler, useCallback, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import FocusTrap from 'focus-trap-react';
 import {
@@ -11,10 +11,8 @@ import {
   Icons,
   Input,
   MenuItem,
-  Modal,
   Overlay,
   OverlayBackdrop,
-  OverlayCenter,
   Scroll,
   Text,
   config,
@@ -62,7 +60,6 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const mx = useMatrixClient();
   const useAuthentication = useMediaAuthentication();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [confirmRoomId, setConfirmRoomId] = useState<string | null>(null);
 
   const mDirects = useAtomValue(mDirectAtom);
   const allRoomsSet = useAllJoinedRoomsSet();
@@ -108,213 +105,148 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const handleRoomClick: React.MouseEventHandler<HTMLButtonElement> = (evt) => {
     const roomId = evt.currentTarget.getAttribute('data-room-id');
     if (roomId) {
-      setConfirmRoomId(roomId);
+      onPick(roomId);
     }
   };
-
-  const handleConfirm = useCallback(() => {
-    if (confirmRoomId) {
-      onPick(confirmRoomId);
-    }
-  }, [confirmRoomId, onPick]);
-
-  const handleCancelConfirm = useCallback(() => {
-    setConfirmRoomId(null);
-  }, []);
 
   const previewText = share.text?.slice(0, 80) ?? share.subject?.slice(0, 80);
   const fileCount = share.files.length;
 
   return (
     <Overlay open backdrop={<OverlayBackdrop />}>
-      <OverlayCenter>
-        <FocusTrap
-          focusTrapOptions={{
-            initialFocus: false,
-            clickOutsideDeactivates: true,
-            onDeactivate: onDismiss,
-            escapeDeactivates: stopPropagation,
+      <FocusTrap
+        focusTrapOptions={{
+          initialFocus: false,
+          clickOutsideDeactivates: true,
+          onDeactivate: onDismiss,
+          escapeDeactivates: stopPropagation,
+        }}
+      >
+        <Box
+          grow="Yes"
+          direction="Column"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 999,
+            backgroundColor: 'var(--bg-surface)',
           }}
         >
-          <Modal size="300">
-            <Box grow="Yes" direction="Column" style={{ maxHeight: '85vh' }}>
-              <Header
-                size="500"
-                style={{ padding: config.space.S400, paddingTop: config.space.S500 }}
-              >
-                <Box grow="Yes" direction="Column" gap="100">
-                  <Text size="H4">Share to Room</Text>
-                  {(previewText || fileCount > 0) && (
-                    <Text size="T200" priority="300" style={{ opacity: 0.7 }}>
-                      {previewText
-                        ? `"${previewText}${(share.text?.length ?? 0) > 80 ? '…' : ''}"`
-                        : `${fileCount} file${fileCount !== 1 ? 's' : ''}`}
-                    </Text>
-                  )}
-                </Box>
-                <Box shrink="No">
-                  <IconButton size="300" radii="300" onClick={onDismiss}>
-                    <Icon src={Icons.Cross} />
-                  </IconButton>
-                </Box>
-              </Header>
-
-              <Box
-                style={{
-                  padding: config.space.S400,
-                  paddingTop: config.space.S200,
-                  paddingBottom: config.space.S200,
-                }}
-              >
-                <Input
-                  onChange={handleSearchChange}
-                  before={<Icon size="200" src={Icons.Search} />}
-                  placeholder="Search rooms…"
-                  size="400"
-                  variant="Background"
-                  outlined
-                  autoFocus
-                />
-              </Box>
-
-              <Scroll ref={scrollRef} size="300" hideTrack style={{ flex: 1, minHeight: 0 }}>
-                <Box
-                  style={{ padding: config.space.S300, paddingTop: 0 }}
-                  direction="Column"
-                >
-                  {vItems.length === 0 && (
-                    <Box
-                      style={{ padding: `${config.space.S700} 0` }}
-                      alignItems="Center"
-                      justifyContent="Center"
-                      direction="Column"
-                      gap="100"
-                    >
-                      <Text size="H6" align="Center">
-                        {searchResult ? 'No Match Found' : 'No Rooms'}
-                      </Text>
-                      <Text size="T200" align="Center" priority="300">
-                        {searchResult
-                          ? `No rooms found for "${searchResult.query}".`
-                          : 'You have no rooms to share into.'}
-                      </Text>
-                    </Box>
-                  )}
-                  <Box
-                    style={{ position: 'relative', height: virtualizer.getTotalSize() }}
-                  >
-                    {vItems.map((vItem) => {
-                      const roomId = items[vItem.index];
-                      const room = getRoom(roomId);
-                      if (!room) return null;
-                      const isDm = mDirects.has(roomId);
-
-                      const avatarSrc = isDm
-                        ? getDirectRoomAvatarUrl(mx, room, 96, useAuthentication)
-                        : getRoomAvatarUrl(mx, room, 96, useAuthentication);
-
-                      return (
-                        <VirtualTile
-                          virtualItem={vItem}
-                          style={{ paddingBottom: config.space.S100 }}
-                          ref={virtualizer.measureElement}
-                          key={roomId}
-                        >
-                          <MenuItem
-                            data-room-id={roomId}
-                            onClick={handleRoomClick}
-                            variant="Surface"
-                            size="400"
-                            radii="400"
-                            before={
-                              <Avatar size="300" radii={isDm ? '400' : '300'}>
-                                {avatarSrc ? (
-                                  <RoomAvatar
-                                    roomId={roomId}
-                                    src={avatarSrc}
-                                    alt={room.name}
-                                    renderFallback={() => (
-                                      <Text as="span" size="H6">
-                                        {nameInitials(room.name)}
-                                      </Text>
-                                    )}
-                                  />
-                                ) : (
-                                  <RoomIcon room={room} size="200" filled />
-                                )}
-                              </Avatar>
-                            }
-                          >
-                            <Box grow="Yes" direction="Column">
-                              <Text size="B400" truncate>
-                                {room.name}
-                              </Text>
-                            </Box>
-                          </MenuItem>
-                        </VirtualTile>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              </Scroll>
+          <Header
+            size="500"
+            style={{ padding: config.space.S400, paddingTop: config.space.S500 }}
+          >
+            <Box grow="Yes" direction="Column" gap="100">
+              <Text size="H4">Share to Room</Text>
+              {(previewText || fileCount > 0) && (
+                <Text size="T200" priority="300" style={{ opacity: 0.7 }}>
+                  {previewText
+                    ? `"${previewText}${(share.text?.length ?? 0) > 80 ? '…' : ''}"`
+                    : `${fileCount} file${fileCount !== 1 ? 's' : ''}`}
+                </Text>
+              )}
             </Box>
-          </Modal>
-        </FocusTrap>
-      </OverlayCenter>
+            <Box shrink="No">
+              <IconButton size="300" radii="300" onClick={onDismiss}>
+                <Icon src={Icons.Cross} />
+              </IconButton>
+            </Box>
+          </Header>
 
-      {confirmRoomId && (() => {
-        const room = getRoom(confirmRoomId);
-        const roomName = room?.name ?? confirmRoomId;
-        const isDm = mDirects.has(confirmRoomId);
-        return (
-          <OverlayCenter>
-            <FocusTrap
-              focusTrapOptions={{
-                initialFocus: false,
-                onDeactivate: handleCancelConfirm,
-                escapeDeactivates: stopPropagation,
-              }}
-            >
-              <Modal size="300">
-                <Box direction="Column" gap="400" style={{ padding: config.space.S400 }}>
-                  <Box direction="Column" gap="200">
-                    <Text size="H4">Share to {isDm ? 'Person' : 'Room'}?</Text>
-                    <Text size="T300" priority="300">
-                      Send to <strong>{roomName}</strong>?
-                    </Text>
-                  </Box>
-                  <Box gap="200" justifyContent="End">
-                    <button
-                      onClick={handleCancelConfirm}
-                      style={{
-                        padding: `${config.space.S200} ${config.space.S400}`,
-                        borderRadius: config.radii.R400,
-                        border: 'none',
-                        background: 'transparent',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <Text size="B400">Cancel</Text>
-                    </button>
-                    <button
-                      onClick={handleConfirm}
-                      style={{
-                        padding: `${config.space.S200} ${config.space.S400}`,
-                        borderRadius: config.radii.R400,
-                        border: 'none',
-                        background: 'var(--bg-primary)',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <Text size="B400">Share</Text>
-                    </button>
-                  </Box>
+          <Box
+            style={{
+              paddingTop: config.space.S200,
+              paddingBottom: config.space.S200,
+            }}
+          >
+            <Input
+              onChange={handleSearchChange}
+              before={<Icon size="200" src={Icons.Search} />}
+              placeholder="Search rooms…"
+              size="400"
+              variant="Background"
+              outlined
+              autoFocus
+            />
+          </Box>
+
+          <Scroll ref={scrollRef} size="300" hideTrack style={{ flex: 1, minHeight: 0 }}>
+            <Box style={{ padding: config.space.S300, paddingTop: 0 }} direction="Column">
+              {vItems.length === 0 && (
+                <Box
+                  style={{ padding: `${config.space.S700} 0` }}
+                  alignItems="Center"
+                  justifyContent="Center"
+                  direction="Column"
+                  gap="100"
+                >
+                  <Text size="H6" align="Center">
+                    {searchResult ? 'No Match Found' : 'No Rooms'}
+                  </Text>
+                  <Text size="T200" align="Center" priority="300">
+                    {searchResult
+                      ? `No rooms found for "${searchResult.query}".`
+                      : 'You have no rooms to share into.'}
+                  </Text>
                 </Box>
-              </Modal>
-            </FocusTrap>
-          </OverlayCenter>
-        );
-      })()}
+              )}
+              <Box style={{ position: 'relative', height: virtualizer.getTotalSize() }}>
+                {vItems.map((vItem) => {
+                  const roomId = items[vItem.index];
+                  const room = getRoom(roomId);
+                  if (!room) return null;
+                  const isDm = mDirects.has(roomId);
+
+                  const avatarSrc = isDm
+                    ? getDirectRoomAvatarUrl(mx, room, 96, useAuthentication)
+                    : getRoomAvatarUrl(mx, room, 96, useAuthentication);
+
+                  return (
+                    <VirtualTile
+                      virtualItem={vItem}
+                      style={{ paddingBottom: config.space.S100 }}
+                      ref={virtualizer.measureElement}
+                      key={roomId}
+                    >
+                      <MenuItem
+                        data-room-id={roomId}
+                        onClick={handleRoomClick}
+                        variant="Surface"
+                        size="400"
+                        radii="400"
+                        before={
+                          <Avatar size="300" radii={isDm ? '400' : '300'}>
+                            {avatarSrc ? (
+                              <RoomAvatar
+                                roomId={roomId}
+                                src={avatarSrc}
+                                alt={room.name}
+                                renderFallback={() => (
+                                  <Text as="span" size="H6">
+                                    {nameInitials(room.name)}
+                                  </Text>
+                                )}
+                              />
+                            ) : (
+                              <RoomIcon room={room} size="200" filled />
+                            )}
+                          </Avatar>
+                        }
+                      >
+                        <Box grow="Yes" direction="Column">
+                          <Text size="B400" truncate>
+                            {room.name}
+                          </Text>
+                        </Box>
+                      </MenuItem>
+                    </VirtualTile>
+                  );
+                })}
+              </Box>
+            </Box>
+          </Scroll>
+        </Box>
+      </FocusTrap>
     </Overlay>
   );
 }
