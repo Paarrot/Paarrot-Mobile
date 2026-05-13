@@ -143,12 +143,12 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
             position: 'fixed',
             inset: 0,
             zIndex: 999,
-            backgroundColor: 'var(--bg-surface)',
+            backgroundColor: '#1a1d23',
           }}
         >
           <Header
             size="500"
-            style={{ padding: config.space.S400, paddingTop: config.space.S500 }}
+            style={{ padding: config.space.S400, paddingTop: '60px' }}
           >
             <Box grow="Yes" direction="Column" gap="100">
               <Text size="H4">Share to Room</Text>
@@ -169,8 +169,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
 
           <Box
             style={{
-              paddingTop: config.space.S200,
-              paddingBottom: config.space.S200,
+              padding: config.space.S200,
             }}
           >
             <Input
@@ -181,11 +180,12 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
               variant="Background"
               outlined
               autoFocus
+              style={{ width: '100%' }}
             />
           </Box>
 
           <Scroll ref={scrollRef} size="300" hideTrack style={{ flex: 1, minHeight: 0 }}>
-            <Box style={{ padding: config.space.S300, paddingTop: 0 }} direction="Column">
+            <Box style={{ padding: config.space.S300, paddingTop: config.space.S300 }} direction="Column">
               {vItems.length === 0 && (
                 <Box
                   style={{ padding: `${config.space.S700} 0` }}
@@ -267,7 +267,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
         const roomName = room?.name ?? confirmRoomId;
         const isDm = mDirects.has(confirmRoomId);
         return (
-          <OverlayCenter>
+          <OverlayCenter style={{ zIndex: 9999 }}>
             <FocusTrap
               focusTrapOptions={{
                 initialFocus: false,
@@ -275,8 +275,8 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
                 escapeDeactivates: stopPropagation,
               }}
             >
-              <Modal size="300">
-                <Box direction="Column" gap="400" style={{ padding: config.space.S400 }}>
+              <Modal size="300" style={{ zIndex: 9999 }}>
+                <Box direction="Column" gap="100" style={{ padding: config.space.S400 }}>
                   <Box direction="Column" gap="200">
                     <Text size="H4">Share to {isDm ? 'Person' : 'Room'}?</Text>
                     <Text size="T300" priority="300">
