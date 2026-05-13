@@ -62,6 +62,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const mx = useMatrixClient();
   const useAuthentication = useMediaAuthentication();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [confirmRoomId, setConfirmRoomId] = useState<string | null>(null);
 
   const mDirects = useAtomValue(mDirectAtom);
   const allRoomsSet = useAllJoinedRoomsSet();
@@ -107,9 +108,19 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
   const handleRoomClick: React.MouseEventHandler<HTMLButtonElement> = (evt) => {
     const roomId = evt.currentTarget.getAttribute('data-room-id');
     if (roomId) {
-      onPick(roomId);
+      setConfirmRoomId(roomId);
     }
   };
+
+  const handleConfirm = useCallback(() => {
+    if (confirmRoomId) {
+      onPick(confirmRoomId);
+    }
+  }, [confirmRoomId, onPick]);
+
+  const handleCancelConfirm = useCallback(() => {
+    setConfirmRoomId(null);
+  }, []);
 
   const previewText = share.text?.slice(0, 80) ?? share.subject?.slice(0, 80);
   const fileCount = share.files.length;
@@ -129,7 +140,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
             <Box grow="Yes" direction="Column" style={{ maxHeight: '85vh' }}>
               <Header
                 size="500"
-                style={{ padding: config.space.S200, paddingLeft: config.space.S400 }}
+                style={{ padding: config.space.S400, paddingTop: config.space.S500 }}
               >
                 <Box grow="Yes" direction="Column" gap="100">
                   <Text size="H4">Share to Room</Text>
@@ -150,7 +161,7 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
 
               <Box
                 style={{
-                  padding: `0 ${config.space.S300}`,
+                  padding: config.space.S400,
                   paddingTop: config.space.S200,
                   paddingBottom: config.space.S200,
                 }}
@@ -250,6 +261,60 @@ export function ShareRoomPicker({ share, onPick, onDismiss }: ShareRoomPickerPro
           </Modal>
         </FocusTrap>
       </OverlayCenter>
+
+      {confirmRoomId && (() => {
+        const room = getRoom(confirmRoomId);
+        const roomName = room?.name ?? confirmRoomId;
+        const isDm = mDirects.has(confirmRoomId);
+        return (
+          <OverlayCenter>
+            <FocusTrap
+              focusTrapOptions={{
+                initialFocus: false,
+                onDeactivate: handleCancelConfirm,
+                escapeDeactivates: stopPropagation,
+              }}
+            >
+              <Modal size="300">
+                <Box direction="Column" gap="400" style={{ padding: config.space.S400 }}>
+                  <Box direction="Column" gap="200">
+                    <Text size="H4">Share to {isDm ? 'Person' : 'Room'}?</Text>
+                    <Text size="T300" priority="300">
+                      Send to <strong>{roomName}</strong>?
+                    </Text>
+                  </Box>
+                  <Box gap="200" justifyContent="End">
+                    <button
+                      onClick={handleCancelConfirm}
+                      style={{
+                        padding: `${config.space.S200} ${config.space.S400}`,
+                        borderRadius: config.radii.R400,
+                        border: 'none',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Text size="B400">Cancel</Text>
+                    </button>
+                    <button
+                      onClick={handleConfirm}
+                      style={{
+                        padding: `${config.space.S200} ${config.space.S400}`,
+                        borderRadius: config.radii.R400,
+                        border: 'none',
+                        background: 'var(--bg-primary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Text size="B400">Share</Text>
+                    </button>
+                  </Box>
+                </Box>
+              </Modal>
+            </FocusTrap>
+          </OverlayCenter>
+        );
+      })()}
     </Overlay>
   );
 }
