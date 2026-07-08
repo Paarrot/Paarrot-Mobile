@@ -8,6 +8,7 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(SyncServicePlugin.class);
         registerPlugin(ShareHandlerPlugin.class);
+        registerPlugin(PluginStoragePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

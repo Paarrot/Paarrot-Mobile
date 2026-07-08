@@ -18,6 +18,7 @@ import {
   RenderLeafProps,
   RenderElementProps,
   RenderPlaceholderProps,
+  ReactEditor,
 } from 'slate-react';
 import { withHistory } from 'slate-history';
 import { BlockType } from './types';
@@ -172,27 +173,44 @@ export const CustomEditor = forwardRef<HTMLDivElement, CustomEditorProps>(
     const handleBeforeInput = useCallback(
       (event: Event) => {
         const inputEvent = event as InputEvent;
-        
-        // Handle autocorrect replacement that causes text duplication
-        if (inputEvent.inputType === 'insertReplacementText' || 
-            inputEvent.inputType === 'insertFromComposition') {
+
+        // Handle mobile autocorrect replacement that causes text duplication in Slate
+        if (inputEvent.inputType === 'insertReplacementText') {
+          const data = inputEvent.data || inputEvent.dataTransfer?.getData('text/plain');
+          if (!data) return;
+
+          event.preventDefault();
+
+          const domRanges = inputEvent.getTargetRanges?.() ?? [];
+          if (domRanges.length > 0) {
+            const slateRange = ReactEditor.toSlateRange(editor, domRanges[0], {
+              exactMatch: false,
+              suppressThrow: true,
+            });
+
+            if (slateRange) {
+              Transforms.select(editor, slateRange);
+              Transforms.delete(editor);
+              editor.insertText(data);
+              return;
+            }
+          }
+
           const { selection } = editor;
           if (!selection) return;
 
-          // Get the data being inserted
-          const data = inputEvent.data || inputEvent.dataTransfer?.getData('text/plain');
-          
-          if (data) {
-            event.preventDefault();
-            
-            // If there's selected text, delete it first
-            if (selection && !Range.isCollapsed(selection)) {
-              Transforms.delete(editor, { at: selection });
+          if (!Range.isCollapsed(selection)) {
+            Transforms.delete(editor, { at: selection });
+          } else {
+            const wordBefore = Editor.before(editor, selection.anchor, { unit: 'word' });
+            if (wordBefore) {
+              const wordRange = { anchor: wordBefore, focus: selection.anchor };
+              Transforms.select(editor, wordRange);
+              Transforms.delete(editor);
             }
-            
-            // Insert the replacement text
-            editor.insertText(data);
           }
+
+          editor.insertText(data);
         }
       },
       [editor]
