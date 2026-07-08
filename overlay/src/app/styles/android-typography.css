@@ -1,0 +1,8 @@
+/*
+ * Android WebView renders Inter Variable with broken word/letter spacing.
+ * Applied when html.android-capacitor is set (see applyAndroidTypographyFix).
+ */
+html.android-capacitor body {
+  letter-spacing: normal;
+  word-spacing: normal;
+}

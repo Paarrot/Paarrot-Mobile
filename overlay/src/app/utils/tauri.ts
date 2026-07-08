@@ -248,6 +248,41 @@ export const isAndroid = (): boolean => {
   return ua.includes('android');
 };
 
+/** Returns true when running as a Capacitor app on Android. */
+export const isCapacitorAndroid = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const cap = (window as { Capacitor?: { isNativePlatform?: () => boolean; getPlatform?: () => string } }).Capacitor;
+  return Boolean(cap?.isNativePlatform?.() && cap?.getPlatform?.() === 'android');
+};
+
+/**
+ * Android WebView mishandles Inter Variable — swap to static Inter / system fonts.
+ */
+export const applyAndroidTypographyFix = (): void => {
+  if (!isCapacitorAndroid()) return;
+
+  const root = document.documentElement;
+  root.classList.add('android-capacitor');
+
+  void (async () => {
+    try {
+      await import('@fontsource/inter/400.css');
+      await import('@fontsource/inter/500.css');
+      await import('@fontsource/inter/600.css');
+      root.style.setProperty(
+        '--font-secondary',
+        `'Inter', system-ui, Roboto, 'Noto Sans', var(--font-emoji), sans-serif`
+      );
+    } catch (err) {
+      console.warn('[applyAndroidTypographyFix] Falling back to system font:', err);
+      root.style.setProperty(
+        '--font-secondary',
+        `system-ui, Roboto, 'Noto Sans', var(--font-emoji), sans-serif`
+      );
+    }
+  })();
+};
+
 /**
  * Apply safe area insets for mobile devices
  * On Android, CSS env() may not work, so we apply fallback padding

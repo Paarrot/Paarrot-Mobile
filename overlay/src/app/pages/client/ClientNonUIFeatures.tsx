@@ -35,9 +35,11 @@ import {
   isTauri,
   isElectron,
   isCapacitorNative,
+  applyAndroidTypographyFix,
   sendNotification,
   setupNotificationTapListener,
 } from '../../utils/tauri';
+import '../../styles/android-typography.css';
 import { setPaarrotNavigate, initPaarrotAPI } from '../../paarrot-api';
 import {
   startBackgroundSync,
@@ -80,6 +82,14 @@ function EmojiStyleFeature() {
       document.documentElement.style.setProperty('--font-emoji', 'SystemEmoji');
       break;
   }
+
+  return null;
+}
+
+function AndroidTypographyFeature() {
+  useEffect(() => {
+    applyAndroidTypographyFix();
+  }, []);
 
   return null;
 }
@@ -684,6 +694,7 @@ export function ClientNonUIFeatures({ children }: ClientNonUIFeaturesProps) {
   return (
     <>
       <EmojiStyleFeature />
+      <AndroidTypographyFeature />
       <PageZoomFeature />
       <FaviconUpdater />
       <InviteNotifications />
