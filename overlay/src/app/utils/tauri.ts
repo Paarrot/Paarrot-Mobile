@@ -256,31 +256,14 @@ export const isCapacitorAndroid = (): boolean => {
 };
 
 /**
- * Android WebView mishandles Inter Variable — swap to static Inter / system fonts.
+ * Android WebView: keep emoji fonts out of the body text stack and use system UI fonts.
  */
 export const applyAndroidTypographyFix = (): void => {
   if (!isCapacitorAndroid()) return;
 
   const root = document.documentElement;
   root.classList.add('android-capacitor');
-
-  void (async () => {
-    try {
-      await import('@fontsource/inter/400.css');
-      await import('@fontsource/inter/500.css');
-      await import('@fontsource/inter/600.css');
-      root.style.setProperty(
-        '--font-secondary',
-        `'Inter', system-ui, Roboto, 'Noto Sans', var(--font-emoji), sans-serif`
-      );
-    } catch (err) {
-      console.warn('[applyAndroidTypographyFix] Falling back to system font:', err);
-      root.style.setProperty(
-        '--font-secondary',
-        `system-ui, Roboto, 'Noto Sans', var(--font-emoji), sans-serif`
-      );
-    }
-  })();
+  root.style.setProperty('--font-secondary', 'system-ui, Roboto, "Noto Sans", sans-serif');
 };
 
 /**

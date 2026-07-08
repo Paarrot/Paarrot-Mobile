@@ -1,0 +1,506 @@
+/* Twemoji font (Twitter emoji) */
+@font-face {
+  font-family: Twemoji;
+  src: url('../public/font/Twemoji.Mozilla.v15.1.0.woff2'),
+    url('../public/font/Twemoji.Mozilla.v15.1.0.ttf');
+  font-display: swap;
+  unicode-range: U+1F300-1F9FF, U+2600-26FF, U+2700-27BF, U+FE0F, U+200D, U+1F1E6-1F1FF;
+}
+
+/* Apple Color Emoji - uses local Apple Color Emoji if available (macOS/iOS),
+   falls back to Segoe UI Emoji (Windows) or Noto (Linux/Android) */
+@font-face {
+  font-family: AppleColorEmoji;
+  src: local('Apple Color Emoji'),
+    local('Segoe UI Emoji'),
+    local('Noto Color Emoji');
+  font-display: swap;
+  unicode-range: U+1F300-1F9FF, U+2600-26FF, U+2700-27BF, U+FE0F, U+200D, U+1F1E6-1F1FF;
+}
+
+/* System emoji - uses native OS emoji */
+@font-face {
+  font-family: SystemEmoji;
+  src: local('Apple Color Emoji'),
+    local('Segoe UI Emoji'),
+    local('Segoe UI Symbol'),
+    local('Noto Color Emoji'),
+    local('Android Emoji'),
+    local('EmojiOne Color');
+  font-display: swap;
+  unicode-range: U+1F300-1F9FF, U+2600-26FF, U+2700-27BF, U+FE0F, U+200D, U+1F1E6-1F1FF;
+}
+
+:root {
+  --tc-link: hsl(213deg 100% 45%);
+
+  /* user mxid colors */
+  --mx-uc-1: hsl(208, 100%, 45%);
+  --mx-uc-2: hsl(302, 100%, 30%);
+  --mx-uc-3: hsl(163, 100%, 30%);
+  --mx-uc-4: hsl(343, 100%, 45%);
+  --mx-uc-5: hsl(24, 100%, 45%);
+  --mx-uc-6: hsl(181, 100%, 30%);
+  --mx-uc-7: hsl(242, 100%, 45%);
+  --mx-uc-8: hsl(94, 100%, 35%);
+
+  --font-emoji: 'AppleColorEmoji';
+  --font-secondary: 'InterVariable', sans-serif;
+}
+
+.dark-theme,
+.butter-theme,
+.discord-theme,
+.discord-darker-theme,
+.twilight-theme,
+.mocha-theme {
+  --tc-link: hsl(213deg 100% 80%);
+
+  --mx-uc-1: hsl(208, 100%, 75%);
+  --mx-uc-2: hsl(301, 100%, 80%);
+  --mx-uc-3: hsl(163, 100%, 70%);
+  --mx-uc-4: hsl(343, 100%, 75%);
+  --mx-uc-5: hsl(24, 100%, 70%);
+  --mx-uc-6: hsl(181, 100%, 60%);
+  --mx-uc-7: hsl(243, 100%, 80%);
+  --mx-uc-8: hsl(94, 100%, 80%);
+
+  --font-secondary: 'InterVariable', sans-serif;
+}
+
+html {
+  height: 100%;
+  overflow: hidden;
+  /* Enable safe area variables */
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-inset-left: env(safe-area-inset-left, 0px);
+  --safe-area-inset-right: env(safe-area-inset-right, 0px);
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  /* Safe area insets for mobile devices (notch, navigation bar) */
+  padding-top: var(--safe-area-inset-top);
+  padding-bottom: var(--safe-area-inset-bottom);
+  padding-left: var(--safe-area-inset-left);
+  padding-right: var(--safe-area-inset-right);
+  height: 100%;
+  font-family: var(--font-secondary);
+  font-size: 16px;
+  font-weight: 400;
+  /* Default to dark theme background for safe areas */
+  background-color: #262626;
+
+  /*Why font-variant-ligatures => https://github.com/rsms/inter/issues/222 */
+  font-variant-ligatures: no-contextual;
+}
+
+/* Prevent zalgo text and combining diacritics from overflowing line boundaries */
+p, span, div, a, button, li, td, th, h1, h2, h3, h4, h5, h6 {
+  line-height: 1.5;
+}
+
+/* Theme-specific body backgrounds for safe area padding */
+body.light-theme {
+  background-color: #F0F0F0;
+}
+body.silver-theme {
+  background-color: #DEDEDE;
+}
+body.dark-theme {
+  background-color: #262626;
+}
+body.butter-theme {
+  background-color: #1A1916;
+}
+body.discord-theme {
+  background-color: #2B2D31;
+}
+body.discord-darker-theme {
+  background-color: #1E1F22;
+}
+body.twilight-theme {
+  background: linear-gradient(135deg, #14121F 0%, #1C1A2E 50%, #24223D 100%);
+}
+body.mocha-theme {
+  background: linear-gradient(135deg, #1A1614 0%, #242019 50%, #2D2721 100%);
+}
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background-color: #262626;
+}
+
+.twilight-theme #root {
+  background: linear-gradient(180deg, rgba(28, 26, 46, 0.5) 0%, rgba(36, 34, 61, 0.3) 100%);
+}
+
+.mocha-theme #root {
+  background: linear-gradient(180deg, rgba(36, 32, 25, 0.5) 0%, rgba(45, 39, 33, 0.3) 100%);
+}
+
+/* Twilight theme gradient overlays */
+.twilight-theme [role="navigation"],
+.twilight-theme aside {
+  background: linear-gradient(180deg, rgba(20, 18, 31, 0.8) 0%, rgba(28, 26, 46, 0.9) 100%);
+  backdrop-filter: blur(8px);
+}
+
+.twilight-theme main {
+  background: linear-gradient(135deg, rgba(24, 22, 45, 0.4) 0%, rgba(36, 34, 61, 0.3) 100%);
+}
+
+.twilight-theme header {
+  background: linear-gradient(90deg, rgba(20, 18, 31, 0.9) 0%, rgba(28, 26, 46, 0.8) 100%);
+}
+
+/* CSS animations for route transitions */
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Apply transition to route changes - works on ALL themes */
+[data-route-transition="true"] {
+  animation: fadeSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Twilight theme enhanced transitions */
+.twilight-theme [data-route-transition="true"] {
+  animation: fadeSlideIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Also apply to main content areas for double coverage */
+.twilight-theme [data-room-view],
+.twilight-theme [data-space-view],
+.twilight-theme [data-inbox-view],
+.twilight-theme [data-explore-view] {
+  animation: fadeSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Smooth transitions for interactive elements */
+.twilight-theme button,
+.twilight-theme [role="button"],
+.twilight-theme a,
+.twilight-theme input,
+.twilight-theme textarea {
+  transition: background-color 0.2s ease, color 0.2s ease, transform 0.15s ease;
+}
+
+.twilight-theme button:hover,
+.twilight-theme [role="button"]:hover {
+  transform: translateY(-1px);
+}
+
+.twilight-theme button:active,
+.twilight-theme [role="button"]:active {
+  transform: translateY(0);
+}
+
+/* Message transitions */
+.twilight-theme [data-message-item] {
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.twilight-theme [data-message-item]:hover {
+  background: linear-gradient(90deg, rgba(62, 58, 106, 0.15) 0%, rgba(86, 80, 150, 0.1) 100%);
+  transform: translateX(2px);
+}
+
+/* Selected item indicator */
+.twilight-theme [data-selected="true"],
+.twilight-theme [aria-selected="true"],
+.twilight-theme [aria-current="true"] {
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.twilight-theme [data-selected="true"]::before,
+.twilight-theme [aria-selected="true"]::before,
+.twilight-theme [aria-current="true"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, #8B7FFF 0%, #6E62E8 100%);
+  transition: width 0.2s ease;
+}
+
+/* Scrollbar styling */
+.twilight-theme ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.twilight-theme ::-webkit-scrollbar-track {
+  background: rgba(20, 18, 31, 0.5);
+}
+
+.twilight-theme ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #3E3A6A 0%, #565096 100%);
+  border-radius: 5px;
+  border: 2px solid rgba(20, 18, 31, 0.5);
+  transition: background 0.2s ease;
+}
+
+.twilight-theme ::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #4A4580 0%, #625BAC 100%);
+}
+
+/* Mocha theme gradient overlays */
+.mocha-theme [role="navigation"],
+.mocha-theme aside {
+  background: linear-gradient(180deg, rgba(26, 22, 20, 0.8) 0%, rgba(36, 32, 25, 0.9) 100%);
+  backdrop-filter: blur(8px);
+}
+
+.mocha-theme main {
+  background: linear-gradient(135deg, rgba(36, 32, 25, 0.4) 0%, rgba(45, 39, 33, 0.3) 100%);
+}
+
+.mocha-theme header {
+  background: linear-gradient(90deg, rgba(26, 22, 20, 0.9) 0%, rgba(36, 32, 25, 0.8) 100%);
+}
+
+/* Mocha theme enhanced transitions */
+.mocha-theme [data-route-transition="true"] {
+  animation: fadeSlideIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.mocha-theme [data-room-view],
+.mocha-theme [data-space-view],
+.mocha-theme [data-inbox-view],
+.mocha-theme [data-explore-view] {
+  animation: fadeSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Smooth transitions for interactive elements */
+.mocha-theme button,
+.mocha-theme [role="button"],
+.mocha-theme a,
+.mocha-theme input,
+.mocha-theme textarea {
+  transition: background-color 0.2s ease, color 0.2s ease, transform 0.15s ease;
+}
+
+.mocha-theme button:hover,
+.mocha-theme [role="button"]:hover {
+  transform: translateY(-1px);
+}
+
+.mocha-theme button:active,
+.mocha-theme [role="button"]:active {
+  transform: translateY(0);
+}
+
+/* Message transitions */
+.mocha-theme [data-message-item] {
+  transition: background-color 0.2s ease, transform 0.2s ease;
+}
+
+.mocha-theme [data-message-item]:hover {
+  background: linear-gradient(90deg, rgba(84, 73, 63, 0.15) 0%, rgba(112, 97, 81, 0.1) 100%);
+  transform: translateX(2px);
+}
+
+/* Selected item indicator */
+.mocha-theme [data-selected="true"],
+.mocha-theme [aria-selected="true"],
+.mocha-theme [aria-current="true"] {
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.mocha-theme [data-selected="true"]::before,
+.mocha-theme [aria-selected="true"]::before,
+.mocha-theme [aria-current="true"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, #D4A574 0%, #B48660 100%);
+  transition: width 0.2s ease;
+}
+
+/* Scrollbar styling */
+.mocha-theme ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.mocha-theme ::-webkit-scrollbar-track {
+  background: rgba(26, 22, 20, 0.5);
+}
+
+.mocha-theme ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #54493F 0%, #706151 100%);
+  border-radius: 5px;
+  border: 2px solid rgba(26, 22, 20, 0.5);
+  transition: background 0.2s ease;
+}
+
+.mocha-theme ::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #625548 0%, #7E6D5A 100%);
+}
+
+/* Subtle dot pattern overlay */
+.mocha-theme::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(rgba(212, 165, 116, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.mocha-theme #root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Focus states */
+.mocha-theme input:focus,
+.mocha-theme textarea:focus,
+.mocha-theme button:focus-visible {
+  outline: 2px solid rgba(212, 165, 116, 0.5);
+  outline-offset: 2px;
+  transition: outline 0.2s ease;
+}
+
+/* Subtle dot pattern overlay */
+.twilight-theme::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(rgba(139, 127, 255, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.twilight-theme #root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Focus states */
+.twilight-theme input:focus,
+.twilight-theme textarea:focus,
+.twilight-theme button:focus-visible {
+  outline: 2px solid rgba(139, 127, 255, 0.5);
+  outline-offset: 2px;
+  transition: outline 0.2s ease;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+  -webkit-tap-highlight-color: transparent;
+}
+a {
+  color: var(--tc-link);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+[data-mx-spoiler][aria-pressed='true'] a {
+  color: transparent;
+  pointer-events: none;
+}
+
+b {
+  font-weight: 500;
+}
+label {
+  margin: 0;
+  padding: 0;
+}
+button,
+textarea {
+  margin: 0;
+  padding: 0;
+  background-color: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  border: none;
+}
+button {
+  max-width: 100%;
+  text-transform: none;
+  text-align: inherit;
+  overflow: visible;
+  -webkit-appearance: button;
+}
+textarea,
+input,
+input[type],
+input[type='text'],
+input[type='username'],
+input[type='password'],
+input[type='email'],
+input[type='checkbox'] {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+textarea {
+  color: inherit;
+  word-spacing: inherit;
+}
+
+audio:not([controls]) {
+  display: none !important;
+}
+
+/* Android WebView: Inter Variable + emoji fonts in the text stack break space metrics */
+html.android-capacitor,
+html.android-capacitor.dark-theme,
+html.android-capacitor.butter-theme,
+html.android-capacitor.discord-theme,
+html.android-capacitor.discord-darker-theme,
+html.android-capacitor.twilight-theme,
+html.android-capacitor.mocha-theme,
+html.android-capacitor.light-theme,
+html.android-capacitor.silver-theme {
+  --font-secondary: system-ui, Roboto, 'Noto Sans', sans-serif;
+}
+
+html.android-capacitor body {
+  font-family: system-ui, Roboto, 'Noto Sans', sans-serif;
+  letter-spacing: normal;
+  word-spacing: normal;
+  font-variant-ligatures: normal;
+}
