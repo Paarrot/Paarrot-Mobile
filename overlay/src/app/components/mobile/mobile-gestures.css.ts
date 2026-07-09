@@ -9,6 +9,19 @@ export const SwipeBackRoot = style({
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
+});
+
+export const SwipeBackContent = style({
+  position: 'relative',
+  zIndex: 1,
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  backgroundColor: color.Background.Container,
+  boxShadow: '0 0 24px rgba(0, 0, 0, 0.35)',
+  willChange: 'transform',
   touchAction: 'pan-y',
 });
 
@@ -33,26 +46,12 @@ export const SwipeBackChannelPeek = style({
   backgroundColor: color.Background.Container,
 });
 
-export const SwipeBackContent = style({
-  position: 'relative',
-  zIndex: 1,
-  flex: 1,
-  minWidth: 0,
-  minHeight: 0,
-  display: 'flex',
-  flexDirection: 'column',
-  backgroundColor: color.Background.Container,
-  boxShadow: '0 0 24px rgba(0, 0, 0, 0.35)',
-  willChange: 'transform',
-});
-
 export const SwipeToReplyLayer = style({
   position: 'relative',
   flex: 1,
   minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
-  touchAction: 'pan-y',
 });
 
 export const SwipeToReplyIndicator = style({

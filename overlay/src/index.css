@@ -184,6 +184,23 @@ body.mocha-theme {
   animation: fadeSlideIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* Disable route slide animation on compact/mobile — conflicts with swipe gestures */
+@media (max-width: 750px) {
+  [data-route-transition='true'] {
+    animation: none;
+  }
+}
+
+html.mobile-gesture-lock,
+html.mobile-gesture-lock body {
+  overscroll-behavior: none;
+}
+
+html.mobile-gesture-lock [data-timeline-scroll] {
+  overflow: hidden !important;
+  touch-action: none;
+}
+
 /* Twilight theme enhanced transitions */
 .twilight-theme [data-route-transition="true"] {
   animation: fadeSlideIn 0.35s cubic-bezier(0.4, 0, 0.2, 1);

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
-import { MobileSwipeBackPanel } from './mobile/MobileSwipeBackPanel';
+import { useCompactNav } from '../hooks/useCompactNav';
+import { MobileSwipeGestureHost } from './mobile/MobileSwipeGestureHost';
 
 /**
  * Wrapper for Outlet that adds route-based animation
@@ -8,12 +9,13 @@ import { MobileSwipeBackPanel } from './mobile/MobileSwipeBackPanel';
  */
 export function AnimatedOutlet() {
   const location = useLocation();
+  const compact = useCompactNav();
 
   return (
-    <MobileSwipeBackPanel>
+    <MobileSwipeGestureHost>
       <div
         key={location.pathname}
-        data-route-transition="true"
+        {...(!compact && { 'data-route-transition': 'true' })}
         style={{
           flex: 1,
           minWidth: 0,
@@ -25,6 +27,6 @@ export function AnimatedOutlet() {
       >
         <Outlet />
       </div>
-    </MobileSwipeBackPanel>
+    </MobileSwipeGestureHost>
   );
 }
