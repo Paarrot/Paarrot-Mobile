@@ -13,37 +13,38 @@ export const SwipeBackRoot = style({
 
 export const SwipeBackContent = style({
   position: 'relative',
-  zIndex: 1,
   flex: 1,
   minWidth: 0,
   minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
   backgroundColor: color.Background.Container,
-  boxShadow: '0 0 24px rgba(0, 0, 0, 0.35)',
+  boxShadow: '-4px 0 16px rgba(0, 0, 0, 0.28)',
   willChange: 'transform',
   touchAction: 'pan-y',
 });
 
-export const SwipeBackUnderlay = style({
+export const CompactDetailRoot = style({
+  position: 'relative',
+  minWidth: 0,
+  overflow: 'hidden',
+});
+
+export const CompactNavUnderlay = style({
   position: 'absolute',
   inset: 0,
   display: 'flex',
-  pointerEvents: 'none',
+  flexDirection: 'column',
   zIndex: 0,
+  pointerEvents: 'none',
 });
 
-export const SwipeBackSidebarPeek = style({
-  width: toRem(66),
-  flexShrink: 0,
-  backgroundColor: color.Background.Container,
-  borderRight: `${config.borderWidth.B300} solid ${color.Background.ContainerLine}`,
-});
-
-export const SwipeBackChannelPeek = style({
-  flex: 1,
+export const CompactDetailLayer = style({
+  position: 'relative',
+  zIndex: 1,
   minWidth: 0,
-  backgroundColor: color.Background.Container,
+  display: 'flex',
+  flexDirection: 'column',
 });
 
 export const SwipeToReplyLayer = style({

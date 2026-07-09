@@ -22,6 +22,7 @@ type GestureState = {
   startX: number;
   startY: number;
   messageEl: HTMLElement | null;
+  transformEl: HTMLElement | null;
   messageId: string | null;
   edgeBack: boolean;
   offset: number;
@@ -33,6 +34,7 @@ const IDLE_STATE: GestureState = {
   startX: 0,
   startY: 0,
   messageEl: null,
+  transformEl: null,
   messageId: null,
   edgeBack: false,
   offset: 0,
@@ -63,6 +65,12 @@ const shouldIgnoreReplyTarget = (target: EventTarget | null): boolean => {
 const findMessageElement = (target: EventTarget | null): HTMLElement | null => {
   if (!(target instanceof Element)) return null;
   return target.closest('[data-message-id]') as HTMLElement | null;
+};
+
+const findReplyTransformTarget = (messageEl: HTMLElement): HTMLElement => {
+  const content = messageEl.querySelector('[data-swipe-reply-content]');
+  if (content instanceof HTMLElement) return content;
+  return messageEl;
 };
 
 const applyBackOffset = (dx: number, width: number): number => {
@@ -123,18 +131,18 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
     document.documentElement.classList.remove('mobile-gesture-lock');
   }, []);
 
-  const resetReplyTransform = useCallback((messageEl?: HTMLElement | null) => {
+  const resetReplyTransform = useCallback((transformEl?: HTMLElement | null) => {
     const bridge = mobileSwipeReplyBridgeRef.current;
-    const el = messageEl ?? gestureRef.current.messageEl;
+    const el = transformEl ?? gestureRef.current.transformEl;
     resetElementTransform(el);
     bridge?.setIndicator(null, false);
     document.documentElement.classList.remove('mobile-gesture-lock');
   }, []);
 
   const resetGesture = useCallback(
-    (messageEl?: HTMLElement | null) => {
+    (transformEl?: HTMLElement | null) => {
       resetBackTransform();
-      resetReplyTransform(messageEl);
+      resetReplyTransform(transformEl);
       unlockScroll();
       gestureRef.current = { ...IDLE_STATE };
     },
@@ -149,6 +157,14 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
     const top = messageRect.top - layerRect.top + messageRect.height / 2 - 18;
     bridge.setIndicator(top, Math.abs(offset) >= REPLY_THRESHOLD * 0.6);
   }, []);
+
+  const applyReplyTransform = useCallback(
+    (transformEl: HTMLElement, messageEl: HTMLElement, offset: number) => {
+      setElementTransform(transformEl, offset);
+      updateReplyIndicator(messageEl, offset);
+    },
+    [updateReplyIndicator]
+  );
 
   const lockGesture = useCallback(
     (phase: 'back' | 'reply', scrollAnchor?: HTMLElement | null) => {
@@ -183,9 +199,9 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
     if (gesture.phase === 'reply' && gesture.messageEl && gesture.messageId) {
       const bridge = mobileSwipeReplyBridgeRef.current;
       const shouldReply = Math.abs(gesture.offset) >= REPLY_THRESHOLD;
-      const { messageEl, messageId } = gesture;
+      const { messageEl, messageId, transformEl } = gesture;
 
-      resetGesture(messageEl);
+      resetGesture(transformEl);
 
       if (shouldReply && bridge) {
         startReplyToEvent(bridge.room, messageId, bridge.setReplyDraft, bridge.editor);
@@ -232,6 +248,7 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
           startX: touch.clientX,
           startY: touch.clientY,
           messageEl: null,
+          transformEl: null,
           messageId: null,
           edgeBack: true,
           offset: 0,
@@ -246,6 +263,7 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
         startX: touch.clientX,
         startY: touch.clientY,
         messageEl: canStartReply ? messageEl : null,
+        transformEl: canStartReply && messageEl ? findReplyTransformTarget(messageEl) : null,
         messageId: canStartReply ? messageId : null,
         edgeBack: false,
         offset: 0,
@@ -277,7 +295,7 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
 
         if (deltaX > 0 && backEnabled) {
           lockGesture('back', contentRef.current);
-        } else if (deltaX < 0 && gesture.messageEl && gesture.messageId) {
+        } else if (deltaX < 0 && gesture.messageEl && gesture.messageId && gesture.transformEl) {
           lockGesture('reply', gesture.messageEl);
         } else {
           resetGesture();
@@ -296,14 +314,13 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
         return;
       }
 
-      if (gesture.phase === 'reply' && gesture.messageEl) {
+      if (gesture.phase === 'reply' && gesture.transformEl && gesture.messageEl) {
         if (!evt.cancelable) return;
         evt.preventDefault();
 
         const offset = Math.max(deltaX, -REPLY_MAX);
         gesture.offset = offset;
-        setElementTransform(gesture.messageEl, offset);
-        updateReplyIndicator(gesture.messageEl, offset);
+        applyReplyTransform(gesture.transformEl, gesture.messageEl, offset);
       }
     };
 
@@ -329,7 +346,7 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
       document.removeEventListener('touchcancel', handleTouchEnd, { capture: true });
       resetGesture();
     };
-  }, [backEnabled, compact, finishGesture, lockGesture, replyEnabled, resetGesture, updateReplyIndicator]);
+  }, [backEnabled, compact, finishGesture, lockGesture, replyEnabled, resetGesture, applyReplyTransform]);
 
   useEffect(() => {
     resetGesture();
@@ -339,16 +356,8 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
     return <>{children}</>;
   }
 
-  const showBackChrome = backEnabled;
-
   return (
     <div ref={rootRef} className={css.SwipeBackRoot}>
-      {showBackChrome && (
-        <div className={css.SwipeBackUnderlay} aria-hidden>
-          <div className={css.SwipeBackSidebarPeek} />
-          <div className={css.SwipeBackChannelPeek} />
-        </div>
-      )}
       <div ref={contentRef} className={css.SwipeBackContent}>
         {children}
       </div>
