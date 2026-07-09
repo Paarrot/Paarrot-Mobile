@@ -1,0 +1,180 @@
+import React, { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { useCompactNav } from '../../hooks/useCompactNav';
+import { useBackRoute } from '../../hooks/useBackRoute';
+import * as css from './mobile-gestures.css';
+
+const COMMIT_RATIO = 0.28;
+const MIN_COMMIT_PX = 72;
+const MAX_START_Y_RATIO = 0.88;
+
+type DragState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dragging: boolean;
+  moved: boolean;
+};
+
+type MobileSwipeBackPanelProps = {
+  children: ReactNode;
+};
+
+export function MobileSwipeBackPanel({ children }: MobileSwipeBackPanelProps) {
+  const compact = useCompactNav();
+  const { canGoBack, goBack } = useBackRoute();
+  const enabled = compact && canGoBack;
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const [offset, setOffset] = useState(0);
+  const [animating, setAnimating] = useState(false);
+
+  const resetTransform = useCallback((animate = true) => {
+    const content = contentRef.current;
+    if (!content) return;
+    setAnimating(animate);
+    setOffset(0);
+    content.style.transition = animate ? 'transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)' : 'none';
+    content.style.transform = 'translateX(0px)';
+  }, []);
+
+  const setTransform = useCallback((px: number, animate = false) => {
+    const content = contentRef.current;
+    if (!content) return;
+    setOffset(px);
+    content.style.transition = animate
+      ? 'transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)'
+      : 'none';
+    content.style.transform = `translateX(${px}px)`;
+  }, []);
+
+  const commitBack = useCallback(() => {
+    const width = rootRef.current?.clientWidth ?? window.innerWidth;
+    setAnimating(true);
+    setTransform(width, true);
+    window.setTimeout(() => {
+      goBack();
+      resetTransform(false);
+      setAnimating(false);
+    }, 180);
+  }, [goBack, resetTransform, setTransform]);
+
+  const shouldIgnoreTarget = (target: EventTarget | null): boolean => {
+    if (!(target instanceof Element)) return true;
+    return Boolean(
+      target.closest(
+        'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], button, a, [role="button"], [data-carousel-scroller], [data-disable-swipe-back="true"]'
+      )
+    );
+  };
+
+  const handlePointerDown = useCallback(
+    (evt: React.PointerEvent<HTMLDivElement>) => {
+      if (!enabled || animating || evt.button !== 0 || !evt.isPrimary) return;
+      if (shouldIgnoreTarget(evt.target)) return;
+      if (evt.clientY > window.innerHeight * MAX_START_Y_RATIO) return;
+
+      dragRef.current = {
+        pointerId: evt.pointerId,
+        startX: evt.clientX,
+        startY: evt.clientY,
+        dragging: true,
+        moved: false,
+      };
+
+      rootRef.current?.setPointerCapture(evt.pointerId);
+    },
+    [animating, enabled]
+  );
+
+  const handlePointerMove = useCallback(
+    (evt: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag || !drag.dragging || drag.pointerId !== evt.pointerId) return;
+
+      const deltaX = evt.clientX - drag.startX;
+      const deltaY = evt.clientY - drag.startY;
+
+      if (!drag.moved) {
+        if (Math.abs(deltaX) < 8 && Math.abs(deltaY) < 8) return;
+        if (Math.abs(deltaY) > Math.abs(deltaX)) {
+          dragRef.current = null;
+          return;
+        }
+        if (deltaX <= 0) {
+          dragRef.current = null;
+          return;
+        }
+        drag.moved = true;
+      }
+
+      evt.preventDefault();
+      const width = rootRef.current?.clientWidth ?? window.innerWidth;
+      setTransform(Math.min(Math.max(deltaX, 0), width), false);
+    },
+    [setTransform]
+  );
+
+  const endDrag = useCallback(
+    (pointerId: number) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== pointerId) return;
+
+      if (rootRef.current?.hasPointerCapture(pointerId)) {
+        rootRef.current.releasePointerCapture(pointerId);
+      }
+
+      dragRef.current = null;
+
+      if (!drag.moved) {
+        resetTransform(false);
+        return;
+      }
+
+      const width = rootRef.current?.clientWidth ?? window.innerWidth;
+      const shouldCommit = offset >= Math.max(width * COMMIT_RATIO, MIN_COMMIT_PX);
+      if (shouldCommit) {
+        commitBack();
+        return;
+      }
+
+      resetTransform(true);
+    },
+    [commitBack, offset, resetTransform]
+  );
+
+  const handlePointerUp = useCallback(
+    (evt: React.PointerEvent<HTMLDivElement>) => {
+      endDrag(evt.pointerId);
+    },
+    [endDrag]
+  );
+
+  useEffect(() => {
+    resetTransform(false);
+  }, [enabled, resetTransform]);
+
+  if (!enabled) {
+    return <>{children}</>;
+  }
+
+  return (
+    <div
+      ref={rootRef}
+      className={css.SwipeBackRoot}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+    >
+      <div className={css.SwipeBackUnderlay} aria-hidden>
+        <div className={css.SwipeBackSidebarPeek} />
+        <div className={css.SwipeBackChannelPeek} />
+      </div>
+      <div ref={contentRef} className={css.SwipeBackContent}>
+        {children}
+      </div>
+    </div>
+  );
+}
