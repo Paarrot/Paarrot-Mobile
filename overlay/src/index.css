@@ -521,3 +521,53 @@ html.android-capacitor body {
   word-spacing: normal;
   font-variant-ligatures: normal;
 }
+
+/* Mobile: hide all scrollbars (touch scrolling still works) */
+@media (max-width: 750px) {
+  *,
+  *::before,
+  *::after {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  *::-webkit-scrollbar,
+  *::-webkit-scrollbar-thumb,
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-corner {
+    display: none;
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+
+  .twilight-theme ::-webkit-scrollbar,
+  .twilight-theme ::-webkit-scrollbar-thumb,
+  .twilight-theme ::-webkit-scrollbar-track,
+  .mocha-theme ::-webkit-scrollbar,
+  .mocha-theme ::-webkit-scrollbar-thumb,
+  .mocha-theme ::-webkit-scrollbar-track {
+    display: none;
+    width: 0;
+    height: 0;
+    background: transparent;
+  }
+}
+
+html.android-capacitor,
+html.android-capacitor *,
+html.android-capacitor *::before,
+html.android-capacitor *::after {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+html.android-capacitor *::-webkit-scrollbar,
+html.android-capacitor *::-webkit-scrollbar-thumb,
+html.android-capacitor *::-webkit-scrollbar-track,
+html.android-capacitor *::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  height: 0;
+  background: transparent;
+}
