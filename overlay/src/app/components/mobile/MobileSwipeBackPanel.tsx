@@ -1,22 +1,36 @@
 import React, { ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useCompactNav } from '../../hooks/useCompactNav';
 import { useBackRoute } from '../../hooks/useBackRoute';
+import {
+  claimMobileGesture,
+  clearMobileGesture,
+  getActiveMobileGesture,
+} from './mobileGestureArbitration';
+import { useWindowPointerDrag } from './useWindowPointerDrag';
 import * as css from './mobile-gestures.css';
 
 const COMMIT_RATIO = 0.28;
 const MIN_COMMIT_PX = 72;
 const MAX_START_Y_RATIO = 0.88;
+const DRAG_THRESHOLD = 8;
 
 type DragState = {
   pointerId: number;
   startX: number;
   startY: number;
-  dragging: boolean;
   moved: boolean;
+  offset: number;
 };
 
 type MobileSwipeBackPanelProps = {
   children: ReactNode;
+};
+
+const readTransformOffset = (el: HTMLElement | null): number => {
+  if (!el) return 0;
+  const transform = window.getComputedStyle(el).transform;
+  if (!transform || transform === 'none') return 0;
+  return new DOMMatrix(transform).m41;
 };
 
 export function MobileSwipeBackPanel({ children }: MobileSwipeBackPanelProps) {
@@ -27,22 +41,25 @@ export function MobileSwipeBackPanel({ children }: MobileSwipeBackPanelProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
-  const [offset, setOffset] = useState(0);
   const [animating, setAnimating] = useState(false);
 
   const resetTransform = useCallback((animate = true) => {
     const content = contentRef.current;
     if (!content) return;
     setAnimating(animate);
-    setOffset(0);
     content.style.transition = animate ? 'transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)' : 'none';
     content.style.transform = 'translateX(0px)';
+    if (dragRef.current) {
+      dragRef.current.offset = 0;
+    }
   }, []);
 
   const setTransform = useCallback((px: number, animate = false) => {
     const content = contentRef.current;
     if (!content) return;
-    setOffset(px);
+    if (dragRef.current) {
+      dragRef.current.offset = px;
+    }
     content.style.transition = animate
       ? 'transform 0.22s cubic-bezier(0.4, 0, 0.2, 1)'
       : 'none';
@@ -69,6 +86,84 @@ export function MobileSwipeBackPanel({ children }: MobileSwipeBackPanelProps) {
     );
   };
 
+  const releaseCapture = useCallback((pointerId: number) => {
+    const root = rootRef.current;
+    if (root?.hasPointerCapture(pointerId)) {
+      root.releasePointerCapture(pointerId);
+    }
+  }, []);
+
+  const endDrag = useCallback(
+    (pointerId: number) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== pointerId) return;
+
+      releaseCapture(pointerId);
+      dragRef.current = null;
+      clearMobileGesture(pointerId);
+
+      if (!drag.moved) {
+        resetTransform(false);
+        return;
+      }
+
+      const width = rootRef.current?.clientWidth ?? window.innerWidth;
+      const currentOffset = Math.max(
+        drag.offset,
+        readTransformOffset(contentRef.current)
+      );
+      const shouldCommit = currentOffset >= Math.max(width * COMMIT_RATIO, MIN_COMMIT_PX);
+
+      if (shouldCommit) {
+        commitBack();
+        return;
+      }
+
+      resetTransform(true);
+    },
+    [commitBack, releaseCapture, resetTransform]
+  );
+
+  const processPointerMove = useCallback(
+    (evt: { pointerId: number; clientX: number; clientY: number; preventDefault?: () => void }) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== evt.pointerId) return;
+
+      const activeGesture = getActiveMobileGesture(evt.pointerId);
+      if (activeGesture && activeGesture !== 'back') return;
+
+      const deltaX = evt.clientX - drag.startX;
+      const deltaY = evt.clientY - drag.startY;
+
+      if (!drag.moved) {
+        if (Math.abs(deltaX) < DRAG_THRESHOLD && Math.abs(deltaY) < DRAG_THRESHOLD) return;
+        if (Math.abs(deltaY) > Math.abs(deltaX)) {
+          dragRef.current = null;
+          clearMobileGesture(evt.pointerId);
+          return;
+        }
+        if (deltaX <= 0) {
+          dragRef.current = null;
+          clearMobileGesture(evt.pointerId);
+          return;
+        }
+        if (!claimMobileGesture('back', evt.pointerId)) return;
+
+        drag.moved = true;
+        try {
+          rootRef.current?.setPointerCapture(evt.pointerId);
+        } catch {
+          // Ignore capture failures on Android WebView.
+        }
+      }
+
+      evt.preventDefault?.();
+      const width = rootRef.current?.clientWidth ?? window.innerWidth;
+      setTransform(Math.min(Math.max(deltaX, 0), width), false);
+    },
+    [setTransform]
+  );
+
   const handlePointerDown = useCallback(
     (evt: React.PointerEvent<HTMLDivElement>) => {
       if (!enabled || animating || evt.button !== 0 || !evt.isPrimary) return;
@@ -79,77 +174,23 @@ export function MobileSwipeBackPanel({ children }: MobileSwipeBackPanelProps) {
         pointerId: evt.pointerId,
         startX: evt.clientX,
         startY: evt.clientY,
-        dragging: true,
         moved: false,
+        offset: 0,
       };
-
-      rootRef.current?.setPointerCapture(evt.pointerId);
     },
     [animating, enabled]
   );
 
-  const handlePointerMove = useCallback(
-    (evt: React.PointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || !drag.dragging || drag.pointerId !== evt.pointerId) return;
+  const isActivePointer = useCallback((pointerId: number) => {
+    return dragRef.current?.pointerId === pointerId;
+  }, []);
 
-      const deltaX = evt.clientX - drag.startX;
-      const deltaY = evt.clientY - drag.startY;
-
-      if (!drag.moved) {
-        if (Math.abs(deltaX) < 8 && Math.abs(deltaY) < 8) return;
-        if (Math.abs(deltaY) > Math.abs(deltaX)) {
-          dragRef.current = null;
-          return;
-        }
-        if (deltaX <= 0) {
-          dragRef.current = null;
-          return;
-        }
-        drag.moved = true;
-      }
-
-      evt.preventDefault();
-      const width = rootRef.current?.clientWidth ?? window.innerWidth;
-      setTransform(Math.min(Math.max(deltaX, 0), width), false);
-    },
-    [setTransform]
-  );
-
-  const endDrag = useCallback(
-    (pointerId: number) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== pointerId) return;
-
-      if (rootRef.current?.hasPointerCapture(pointerId)) {
-        rootRef.current.releasePointerCapture(pointerId);
-      }
-
-      dragRef.current = null;
-
-      if (!drag.moved) {
-        resetTransform(false);
-        return;
-      }
-
-      const width = rootRef.current?.clientWidth ?? window.innerWidth;
-      const shouldCommit = offset >= Math.max(width * COMMIT_RATIO, MIN_COMMIT_PX);
-      if (shouldCommit) {
-        commitBack();
-        return;
-      }
-
-      resetTransform(true);
-    },
-    [commitBack, offset, resetTransform]
-  );
-
-  const handlePointerUp = useCallback(
-    (evt: React.PointerEvent<HTMLDivElement>) => {
-      endDrag(evt.pointerId);
-    },
-    [endDrag]
-  );
+  useWindowPointerDrag({
+    enabled,
+    isActivePointer,
+    onMove: processPointerMove,
+    onEnd: endDrag,
+  });
 
   useEffect(() => {
     resetTransform(false);
@@ -164,9 +205,10 @@ export function MobileSwipeBackPanel({ children }: MobileSwipeBackPanelProps) {
       ref={rootRef}
       className={css.SwipeBackRoot}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      onPointerMove={processPointerMove}
+      onPointerUp={(evt) => endDrag(evt.pointerId)}
+      onPointerCancel={(evt) => endDrag(evt.pointerId)}
+      onLostPointerCapture={(evt) => endDrag(evt.pointerId)}
     >
       <div className={css.SwipeBackUnderlay} aria-hidden>
         <div className={css.SwipeBackSidebarPeek} />

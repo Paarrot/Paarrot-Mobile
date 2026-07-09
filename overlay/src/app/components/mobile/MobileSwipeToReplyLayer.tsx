@@ -6,10 +6,17 @@ import { Icon, Icons } from '../icons';
 import { useCompactNav } from '../../hooks/useCompactNav';
 import { roomIdToReplyDraftAtomFamily } from '../../state/room/roomInputDrafts';
 import { startReplyToEvent } from '../../features/room/replyToMessage';
+import {
+  claimMobileGesture,
+  clearMobileGesture,
+  getActiveMobileGesture,
+} from './mobileGestureArbitration';
+import { useWindowPointerDrag } from './useWindowPointerDrag';
 import * as css from './mobile-gestures.css';
 
 const SWIPE_THRESHOLD = 56;
 const MAX_SWIPE = 88;
+const DRAG_THRESHOLD = 8;
 
 type DragState = {
   pointerId: number;
@@ -18,6 +25,7 @@ type DragState = {
   messageEl: HTMLElement;
   messageId: string;
   moved: boolean;
+  offset: number;
 };
 
 type MobileSwipeToReplyLayerProps = {
@@ -42,38 +50,34 @@ export function MobileSwipeToReplyLayer({ room, editor, children }: MobileSwipeT
     target.style.transform = 'translateX(0px)';
   }, []);
 
-  const resetGesture = useCallback(() => {
-    clearMessageTransform();
-    dragRef.current = null;
-    setIndicatorTop(null);
-    setIndicatorActive(false);
-  }, [clearMessageTransform]);
+  const releaseCapture = useCallback((pointerId: number) => {
+    const layer = layerRef.current;
+    if (layer?.hasPointerCapture(pointerId)) {
+      layer.releasePointerCapture(pointerId);
+    }
+  }, []);
+
+  const resetGesture = useCallback(
+    (pointerId?: number) => {
+      if (pointerId !== undefined) {
+        releaseCapture(pointerId);
+        clearMobileGesture(pointerId);
+      }
+      clearMessageTransform();
+      dragRef.current = null;
+      setIndicatorTop(null);
+      setIndicatorActive(false);
+    },
+    [clearMessageTransform, releaseCapture]
+  );
 
   const shouldIgnoreTarget = (target: EventTarget | null): boolean => {
     if (!(target instanceof Element)) return true;
-    if (
+    return Boolean(
       target.closest(
-        'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], button, a, [role="button"], [data-disable-swipe-reply="true"]'
+        'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], [data-carousel-scroller], [data-disable-swipe-reply="true"]'
       )
-    ) {
-      return true;
-    }
-
-    let el: Element | null = target;
-    while (el && layerRef.current?.contains(el)) {
-      if (el instanceof HTMLElement) {
-        const { overflowX } = window.getComputedStyle(el);
-        if (
-          (overflowX === 'auto' || overflowX === 'scroll') &&
-          el.scrollWidth > el.clientWidth + 8
-        ) {
-          return true;
-        }
-      }
-      el = el.parentElement;
-    }
-
-    return false;
+    );
   };
 
   const findMessageElement = (target: EventTarget | null): HTMLElement | null => {
@@ -89,6 +93,74 @@ export function MobileSwipeToReplyLayer({ room, editor, children }: MobileSwipeT
     setIndicatorTop(messageRect.top - layerRect.top + messageRect.height / 2 - 18);
     setIndicatorActive(Math.abs(offset) >= SWIPE_THRESHOLD * 0.65);
   }, []);
+
+  const endDrag = useCallback(
+    (pointerId: number) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== pointerId) return;
+
+      releaseCapture(pointerId);
+      const { messageEl, messageId, moved, offset } = drag;
+      dragRef.current = null;
+      clearMobileGesture(pointerId);
+
+      if (!moved) {
+        resetGesture();
+        return;
+      }
+
+      const shouldReply = Math.abs(offset) >= SWIPE_THRESHOLD;
+      clearMessageTransform(messageEl, true);
+      setIndicatorTop(null);
+      setIndicatorActive(false);
+
+      if (shouldReply) {
+        startReplyToEvent(room, messageId, setReplyDraft, editor);
+      }
+    },
+    [clearMessageTransform, editor, releaseCapture, resetGesture, room, setReplyDraft]
+  );
+
+  const processPointerMove = useCallback(
+    (evt: { pointerId: number; clientX: number; clientY: number; preventDefault?: () => void }) => {
+      const drag = dragRef.current;
+      if (!drag || drag.pointerId !== evt.pointerId) return;
+
+      const activeGesture = getActiveMobileGesture(evt.pointerId);
+      if (activeGesture && activeGesture !== 'reply') return;
+
+      const deltaX = evt.clientX - drag.startX;
+      const deltaY = evt.clientY - drag.startY;
+
+      if (!drag.moved) {
+        if (Math.abs(deltaX) < DRAG_THRESHOLD && Math.abs(deltaY) < DRAG_THRESHOLD) return;
+        if (Math.abs(deltaY) > Math.abs(deltaX)) {
+          resetGesture(evt.pointerId);
+          return;
+        }
+        if (deltaX >= 0) {
+          resetGesture(evt.pointerId);
+          return;
+        }
+        if (!claimMobileGesture('reply', evt.pointerId)) return;
+
+        drag.moved = true;
+        try {
+          layerRef.current?.setPointerCapture(evt.pointerId);
+        } catch {
+          // Ignore capture failures on Android WebView.
+        }
+      }
+
+      evt.preventDefault?.();
+      const offset = Math.max(deltaX, -MAX_SWIPE);
+      drag.offset = offset;
+      drag.messageEl.style.transition = 'none';
+      drag.messageEl.style.transform = `translateX(${offset}px)`;
+      updateIndicator(drag.messageEl, offset);
+    },
+    [resetGesture, updateIndicator]
+  );
 
   const handlePointerDown = useCallback(
     (evt: React.PointerEvent<HTMLDivElement>) => {
@@ -106,86 +178,26 @@ export function MobileSwipeToReplyLayer({ room, editor, children }: MobileSwipeT
         messageEl,
         messageId,
         moved: false,
+        offset: 0,
       };
-
-      layerRef.current?.setPointerCapture(evt.pointerId);
     },
     [enabled]
   );
 
-  const handlePointerMove = useCallback(
-    (evt: React.PointerEvent<HTMLDivElement>) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== evt.pointerId) return;
+  const isActivePointer = useCallback((pointerId: number) => {
+    return dragRef.current?.pointerId === pointerId;
+  }, []);
 
-      const deltaX = evt.clientX - drag.startX;
-      const deltaY = evt.clientY - drag.startY;
+  useWindowPointerDrag({
+    enabled,
+    isActivePointer,
+    onMove: processPointerMove,
+    onEnd: endDrag,
+  });
 
-      if (!drag.moved) {
-        if (Math.abs(deltaX) < 8 && Math.abs(deltaY) < 8) return;
-        if (Math.abs(deltaY) > Math.abs(deltaX)) {
-          resetGesture();
-          return;
-        }
-        if (deltaX >= 0) {
-          resetGesture();
-          return;
-        }
-        drag.moved = true;
-      }
-
-      evt.preventDefault();
-      const offset = Math.max(deltaX, -MAX_SWIPE);
-      drag.messageEl.style.transition = 'none';
-      drag.messageEl.style.transform = `translateX(${offset}px)`;
-      updateIndicator(drag.messageEl, offset);
-    },
-    [resetGesture, updateIndicator]
-  );
-
-  const endDrag = useCallback(
-    (pointerId: number) => {
-      const drag = dragRef.current;
-      if (!drag || drag.pointerId !== pointerId) return;
-
-      if (layerRef.current?.hasPointerCapture(pointerId)) {
-        layerRef.current.releasePointerCapture(pointerId);
-      }
-
-      const { messageEl, messageId, moved } = drag;
-      dragRef.current = null;
-
-      if (!moved) {
-        resetGesture();
-        return;
-      }
-
-      const matrix = window.getComputedStyle(messageEl).transform;
-      const offset =
-        matrix && matrix !== 'none'
-          ? Number(new DOMMatrix(matrix).m41)
-          : 0;
-
-      const shouldReply = Math.abs(offset) >= SWIPE_THRESHOLD;
-      clearMessageTransform(messageEl, true);
-      setIndicatorTop(null);
-      setIndicatorActive(false);
-
-      if (shouldReply) {
-        startReplyToEvent(room, messageId, setReplyDraft, editor);
-      }
-    },
-    [clearMessageTransform, editor, resetGesture, room, setReplyDraft]
-  );
-
-  const handlePointerUp = useCallback(
-    (evt: React.PointerEvent<HTMLDivElement>) => {
-      endDrag(evt.pointerId);
-    },
-    [endDrag]
-  );
-
-  useEffect(() => resetGesture, [room.roomId, resetGesture]);
+  useEffect(() => {
+    resetGesture();
+  }, [room.roomId, resetGesture]);
 
   if (!enabled) {
     return <>{children}</>;
@@ -196,9 +208,10 @@ export function MobileSwipeToReplyLayer({ room, editor, children }: MobileSwipeT
       ref={layerRef}
       className={css.SwipeToReplyLayer}
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
+      onPointerMove={processPointerMove}
+      onPointerUp={(evt) => endDrag(evt.pointerId)}
+      onPointerCancel={(evt) => endDrag(evt.pointerId)}
+      onLostPointerCapture={(evt) => endDrag(evt.pointerId)}
     >
       {children}
       {indicatorTop !== null && (

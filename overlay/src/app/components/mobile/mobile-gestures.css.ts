@@ -9,6 +9,7 @@ export const SwipeBackRoot = style({
   overflow: 'hidden',
   display: 'flex',
   flexDirection: 'column',
+  touchAction: 'pan-y',
 });
 
 export const SwipeBackUnderlay = style({
