@@ -220,6 +220,12 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
     const getEndedTouch = (evt: TouchEvent, touchId: number) =>
       Array.from(evt.changedTouches).find((touch) => touch.identifier === touchId);
 
+    const isInsideSwipeHost = (target: EventTarget | null): boolean => {
+      const root = rootRef.current;
+      if (!root || !(target instanceof Node)) return false;
+      return root.contains(target);
+    };
+
     const handleTouchStart = (evt: TouchEvent) => {
       if (gestureRef.current.phase !== 'idle') return;
 
@@ -232,7 +238,12 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
       const messageEl = findMessageElement(target);
       const messageId = messageEl?.getAttribute('data-message-id') ?? null;
 
-      const canStartBack = backEnabled && !shouldIgnoreBackTarget(target);
+      // Only steal touches that start inside the detail/swipe host. Document-level
+      // listeners otherwise fight the always-visible sidebar (space icons sit in the
+      // former screen-left EDGE_WIDTH zone and lost clicks to preventDefault).
+      const insideHost = isInsideSwipeHost(target);
+      const canStartBack =
+        backEnabled && insideHost && !shouldIgnoreBackTarget(target);
       const canStartReply =
         replyEnabled &&
         messageEl &&
@@ -242,23 +253,11 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
 
       if (!canStartBack && !canStartReply) return;
 
-      if (touch.clientX <= EDGE_WIDTH && canStartBack) {
-        evt.preventDefault();
-        gestureRef.current = {
-          phase: 'back',
-          touchId: touch.identifier,
-          startX: touch.clientX,
-          startY: touch.clientY,
-          messageEl: null,
-          transformEl: null,
-          messageId: null,
-          edgeBack: true,
-          offset: 0,
-        };
-        document.documentElement.classList.add('mobile-gesture-lock');
-        return;
-      }
+      const contentLeft = rootRef.current?.getBoundingClientRect().left ?? 0;
+      const nearContentLeftEdge =
+        touch.clientX >= contentLeft && touch.clientX <= contentLeft + EDGE_WIDTH;
 
+      // Prefer pending over immediate back+preventDefault so a tap still clicks.
       gestureRef.current = {
         phase: 'pending',
         touchId: touch.identifier,
@@ -267,7 +266,7 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
         messageEl: canStartReply ? messageEl : null,
         transformEl: canStartReply && messageEl ? findReplyTransformTarget(messageEl) : null,
         messageId: canStartReply ? messageId : null,
-        edgeBack: false,
+        edgeBack: nearContentLeftEdge && canStartBack,
         offset: 0,
       };
     };
