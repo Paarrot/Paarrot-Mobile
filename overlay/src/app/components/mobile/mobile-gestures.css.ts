@@ -1,4 +1,4 @@
-import { style } from '@vanilla-extract/css';
+import { globalStyle, style } from '@vanilla-extract/css';
 import { color, config, toRem } from 'folds';
 
 export const SwipeBackRoot = style({
@@ -49,19 +49,18 @@ export const CompactDetailLayer = style({
   display: 'flex',
   flexDirection: 'column',
   // Pass through taps when outlet content is null/empty; real pages
-  // re-enable pointer events on their root via the child selector.
+  // re-enable pointer events on their root via the child rule below.
   pointerEvents: 'none',
-  selectors: {
-    '& > *': {
-      pointerEvents: 'auto',
-      flex: 1,
-      minHeight: 0,
-      minWidth: 0,
-      display: 'flex',
-      flexDirection: 'column',
-      backgroundColor: color.Background.Container,
-    },
-  },
+});
+
+globalStyle(`${CompactDetailLayer} > *`, {
+  pointerEvents: 'auto',
+  flex: 1,
+  minHeight: 0,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  backgroundColor: color.Background.Container,
 });
 
 export const SwipeToReplyLayer = style({
