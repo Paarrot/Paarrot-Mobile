@@ -18,6 +18,9 @@ export function PageRoot({ nav, children }: PageRootProps) {
   const showCompactMaster = useShowCompactMasterView();
   const compact = screenSize === ScreenSize.Mobile;
 
+  // Master list routes: only the channel/space list is interactive.
+  // Never mount the detail/underlay stack here — an empty detail layer would
+  // sit above the list with pointer-events and freeze taps (DM → space bug).
   if (compact && showCompactMaster) {
     return (
       <Box grow="Yes" className={ContainerColor({ variant: 'Background' })}>

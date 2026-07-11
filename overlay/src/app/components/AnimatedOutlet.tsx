@@ -1,15 +1,23 @@
 import React from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
-import { useCompactNav } from '../hooks/useCompactNav';
+import { useCompactNav, useIsCompactListRoute } from '../hooks/useCompactNav';
 import { MobileSwipeGestureHost } from './mobile/MobileSwipeGestureHost';
 
 /**
- * Wrapper for Outlet that adds route-based animation
- * Forces remount on route change by using location as key
+ * Outlet wrapper for route remounts + compact swipe-back chrome.
+ *
+ * On compact list routes the parent PageRoot already omits children. If this
+ * outlet is still mounted (stale stack / empty SpaceIndexRedirect), render
+ * nothing so an empty swipe shell cannot sit above the channel list and eat taps.
  */
 export function AnimatedOutlet() {
   const location = useLocation();
   const compact = useCompactNav();
+  const isListRoute = useIsCompactListRoute();
+
+  if (compact && isListRoute) {
+    return null;
+  }
 
   return (
     <MobileSwipeGestureHost>

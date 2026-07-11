@@ -1,4 +1,5 @@
 import React, { ReactNode, useCallback, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useCompactNav } from '../../hooks/useCompactNav';
 import { useBackRoute } from '../../hooks/useBackRoute';
 import { startReplyToEvent } from '../../features/room/replyToMessage';
@@ -93,6 +94,7 @@ const resetElementTransform = (el: HTMLElement | null) => {
 
 export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps) {
   const compact = useCompactNav();
+  const { pathname } = useLocation();
   const { canGoBack, goBack } = useBackRoute();
   const backEnabled = compact && canGoBack;
   const replyEnabled = compact;
@@ -350,7 +352,7 @@ export function MobileSwipeGestureHost({ children }: MobileSwipeGestureHostProps
 
   useEffect(() => {
     resetGesture();
-  }, [canGoBack, resetGesture]);
+  }, [canGoBack, pathname, resetGesture]);
 
   if (!compact) {
     return <>{children}</>;

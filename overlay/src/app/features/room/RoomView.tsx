@@ -26,6 +26,7 @@ import { useRoomCreators } from '../../hooks/useRoomCreators';
 import { activeThreadIdAtomFamily } from '../../state/activeThread';
 import { ThreadView } from './ThreadView';
 import { MobileSwipeToReplyLayer } from '../../components/mobile/MobileSwipeToReplyLayer';
+import { useMobileKeyboardLayout } from '../../hooks/useMobileKeyboardLayout';
 
 const FN_KEYS_REGEX = /^F\d+$/;
 const shouldFocusMessageField = (evt: KeyboardEvent): boolean => {
@@ -63,6 +64,7 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
   const roomViewRef = useRef<HTMLDivElement>(null);
 
   const [hideActivity] = useSetting(settingsAtom, 'hideActivity');
+  const { isLandscape, keyboardOpen } = useMobileKeyboardLayout();
 
   const { roomId } = room;
   const editor = useEditor();
@@ -101,9 +103,12 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
     )
   );
 
+  const composerPadding = isLandscape ? '0' : `0 ${config.space.S400}`;
+  const showHeader = !keyboardOpen;
+
   return (
     <Page ref={roomViewRef}>
-      <RoomViewHeader />
+      {showHeader && <RoomViewHeader />}
       {activeThreadId ? (
         <ThreadView room={room} threadRootId={activeThreadId} />
       ) : (
@@ -121,7 +126,7 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
             </Box>
           </MobileSwipeToReplyLayer>
           <Box shrink="No" direction="Column" data-disable-swipe-back="true">
-            <div style={{ padding: `0 ${config.space.S400}` }}>
+            <div style={{ padding: composerPadding }}>
               {tombstoneEvent ? (
                 <RoomTombstone
                   roomId={roomId}

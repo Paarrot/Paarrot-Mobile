@@ -36,7 +36,10 @@ export const CompactNavUnderlay = style({
   display: 'flex',
   flexDirection: 'column',
   zIndex: 0,
-  pointerEvents: 'none',
+  // Keep underlay tappable if the detail layer is empty/transparent
+  // (e.g. space index after leaving DMs). Opaque detail content still
+  // sits above and receives taps first.
+  pointerEvents: 'auto',
 });
 
 export const CompactDetailLayer = style({
@@ -45,6 +48,20 @@ export const CompactDetailLayer = style({
   minWidth: 0,
   display: 'flex',
   flexDirection: 'column',
+  // Pass through taps when outlet content is null/empty; real pages
+  // re-enable pointer events on their root via the child selector.
+  pointerEvents: 'none',
+  selectors: {
+    '& > *': {
+      pointerEvents: 'auto',
+      flex: 1,
+      minHeight: 0,
+      minWidth: 0,
+      display: 'flex',
+      flexDirection: 'column',
+      backgroundColor: color.Background.Container,
+    },
+  },
 });
 
 export const SwipeToReplyLayer = style({
