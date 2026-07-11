@@ -62,7 +62,6 @@ object ShareIntentStore {
 
         if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
 
-        val receivedAt = System.currentTimeMillis()
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
         val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
 
@@ -86,7 +85,28 @@ object ShareIntentStore {
             uri?.let { uris.add(it) }
         }
 
+        deliverShare(context, uris, text, subject)
+    }
+
+    /**
+     * Deliver content URIs from the IME (Gboard GIF), clipboard paste, or drag-drop
+     * into the same share pipeline used by ACTION_SEND.
+     */
+    fun handleContentUris(context: Context, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        deliverShare(context, uris, text = null, subject = null)
+    }
+
+    private fun deliverShare(
+        context: Context,
+        uris: List<Uri>,
+        text: String?,
+        subject: String?,
+    ) {
+        val receivedAt = System.currentTimeMillis()
         val copiedFiles = uris.mapNotNull { copySharedUri(context, it, receivedAt) }
+
+        if (copiedFiles.isEmpty() && text.isNullOrBlank() && subject.isNullOrBlank()) return
 
         val payload = SharePayload(
             text = text,

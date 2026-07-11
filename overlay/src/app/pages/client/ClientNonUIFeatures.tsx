@@ -1,5 +1,4 @@
-import { useAtomValue } from 'jotai';
-import { useAtom, useSetAtom } from 'jotai';
+import { useAtomValue, useStore } from 'jotai';
 import React, { ReactNode, useCallback, useEffect, useRef, useState, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { RoomEvent, RoomEventHandlerMap } from 'matrix-js-sdk';
@@ -23,13 +22,12 @@ import {
   guessPerfectParent,
 } from '../../utils/room';
 import { NotificationType, UnreadInfo } from '../../../types/matrix/room';
-import { getMxIdLocalPart, mxcUrlToHttp, getCanonicalAliasOrRoomId } from '../../utils/matrix';
+import { getMxIdLocalPart, mxcUrlToHttp, getCanonicalAliasOrRoomId, encryptFile } from '../../utils/matrix';
 import { mDirectAtom } from '../../state/mDirectList';
 import { roomToParentsAtom } from '../../state/room/roomToParents';
 import { useSelectedRoom } from '../../hooks/router/useSelectedRoom';
 import { useInboxNotificationsSelected } from '../../hooks/router/useInbox';
 import { useMediaAuthentication } from '../../hooks/useMediaAuthentication';
-import { plainToEditorInput, toPlainText } from '../../components/editor';
 import { ShareRoomPicker } from '../../features/ShareRoomPicker';
 import {
   isTauri,
@@ -46,10 +44,10 @@ import {
 } from '../../utils/backgroundSync';
 import {
   TUploadItem,
-  roomIdToMsgDraftAtomFamily,
   roomIdToUploadItemsAtomFamily,
 } from '../../state/room/roomInputDrafts';
-import { encryptFile } from '../../utils/matrix';
+import { fulfilledPromiseSettledResult } from '../../utils/common';
+import { safeFile } from '../../utils/mimeTypes';
 import {
   AndroidSharePayload,
   clearPendingAndroidShare,
@@ -517,10 +515,71 @@ function TaskbarFlashStopper() {
 
 function AndroidShareIntentHandler() {
   const mx = useMatrixClient();
+  const store = useStore();
   const navigate = useNavigate();
   const [pendingShare, setPendingShare] = useState<AndroidSharePayload | null>(null);
   const mDirects = useAtomValue(mDirectAtom);
   const roomToParents = useAtomValue(roomToParentsAtom);
+  const selectedRoomId = useSelectedRoom();
+  const selectedRoomIdRef = useRef(selectedRoomId);
+  selectedRoomIdRef.current = selectedRoomId;
+
+  /** Queue shared files into the open room's composer upload board (Gboard / paste / share). */
+  const queueShareAsDrafts = useCallback(
+    async (share: AndroidSharePayload, roomId: string) => {
+      const room = mx.getRoom(roomId);
+      if (!room) return false;
+
+      if (share.files.length > 0) {
+        const originalFiles: File[] = [];
+        for (const sharedFile of share.files) {
+          originalFiles.push(await materializeSharedFile(sharedFile, share.receivedAt));
+        }
+        const safeFiles = originalFiles.map(safeFile);
+        const fileItems: TUploadItem[] = [];
+
+        if (room.hasEncryptionStateEvent()) {
+          const encryptFiles = fulfilledPromiseSettledResult(
+            await Promise.allSettled(safeFiles.map((f) => encryptFile(f)))
+          );
+          encryptFiles.forEach((ef) =>
+            fileItems.push({
+              ...ef,
+              metadata: { markedAsSpoiler: false },
+            })
+          );
+        } else {
+          safeFiles.forEach((f) =>
+            fileItems.push({
+              file: f,
+              originalFile: f,
+              encInfo: undefined,
+              metadata: { markedAsSpoiler: false },
+            })
+          );
+        }
+
+        store.set(roomIdToUploadItemsAtomFamily(roomId), {
+          type: 'PUT',
+          item: fileItems,
+        });
+      }
+
+      const nextParts = [share.subject?.trim(), share.text?.trim()].filter(
+        (value): value is string => !!value
+      );
+      if (nextParts.length > 0) {
+        await mx.sendMessage(roomId, {
+          msgtype: 'm.text' as const,
+          body: nextParts.join('\n'),
+        });
+      }
+
+      await clearPendingAndroidShare();
+      return true;
+    },
+    [mx, store]
+  );
 
   const applyPendingShare = useCallback(
     async (share: AndroidSharePayload, roomId: string) => {
@@ -543,7 +602,7 @@ function AndroidShareIntentHandler() {
       if (share.files.length > 0) {
         for (const sharedFile of share.files) {
           const originalFile = await materializeSharedFile(sharedFile, share.receivedAt);
-          
+
           let fileToUpload = originalFile;
           let encInfo: any = undefined;
 
@@ -594,6 +653,22 @@ function AndroidShareIntentHandler() {
     [mx]
   );
 
+  const ingestShare = useCallback(
+    (share: AndroidSharePayload) => {
+      const roomId = selectedRoomIdRef.current;
+      // Already in a room: attach to composer (Gboard GIF / paste / in-app share).
+      if (roomId && share.files.length > 0) {
+        queueShareAsDrafts(share, roomId).catch((err) => {
+          console.error('[AndroidShare] Failed to queue share into room:', err);
+          setPendingShare(share);
+        });
+        return;
+      }
+      setPendingShare(share);
+    },
+    [queueShareAsDrafts]
+  );
+
   const handlePickRoom = useCallback(
     (roomId: string) => {
       if (!pendingShare) return;
@@ -602,7 +677,7 @@ function AndroidShareIntentHandler() {
         .then((applied) => {
           if (applied) {
             setPendingShare(null);
-            
+
             // Navigate to the selected room
             const isDirect = mDirects.has(roomId);
             if (isDirect) {
@@ -640,7 +715,7 @@ function AndroidShareIntentHandler() {
     getPendingAndroidShare()
       .then((share) => {
         if (mounted && share) {
-          setPendingShare(share);
+          ingestShare(share);
         }
       })
       .catch((err) => {
@@ -649,7 +724,7 @@ function AndroidShareIntentHandler() {
 
     listenForAndroidShares((share) => {
       if (mounted) {
-        setPendingShare(share);
+        ingestShare(share);
       }
     })
       .then((handle) => {
@@ -663,7 +738,7 @@ function AndroidShareIntentHandler() {
       mounted = false;
       void listenerHandle?.remove();
     };
-  }, []);
+  }, [ingestShare]);
 
   if (!pendingShare) return null;
 

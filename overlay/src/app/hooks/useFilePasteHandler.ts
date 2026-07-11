@@ -1,6 +1,6 @@
 import { useCallback, ClipboardEventHandler } from 'react';
 import { getDataTransferFiles } from '../utils/dom';
-import { readClipboardImage, isTauri, isLinux } from '../utils/tauri';
+import { readClipboardImage, isTauri, isLinux, isCapacitorNative } from '../utils/tauri';
 
 const filesFromClipboardItems = (data: DataTransfer | null): File[] => {
   if (!data?.items) return [];
@@ -50,9 +50,30 @@ const getClipboardFiles = (data: DataTransfer | null): File[] => {
   return filesFromHtmlImage(data);
 };
 
+/** Async Clipboard API fallback (when paste event has no file payload). */
+const filesFromClipboardApi = async (): Promise<File[]> => {
+  if (!navigator.clipboard?.read) return [];
+  try {
+    const items = await navigator.clipboard.read();
+    const files: File[] = [];
+    for (const item of items) {
+      for (const type of item.types) {
+        if (!type.startsWith('image/')) continue;
+        const blob = await item.getType(type);
+        const ext = type.split('/')[1]?.replace('+xml', '') || 'png';
+        files.push(new File([blob], `clipboard-image.${ext}`, { type }));
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+};
+
 /**
  * Paste handler for RoomInput. Supports clipboard images via files, DataTransferItem
- * list, and HTML data-URL fallbacks (common on mobile WebViews).
+ * list, HTML data-URL fallbacks, and Clipboard API (common on mobile WebViews).
+ * On Capacitor Android, native OnReceiveContent also routes images into the share pipeline.
  */
 export const useFilePasteHandler = (onPaste: (file: File[]) => void): ClipboardEventHandler =>
   useCallback(
@@ -72,6 +93,17 @@ export const useFilePasteHandler = (onPaste: (file: File[]) => void): ClipboardE
           evt.preventDefault();
           evt.stopPropagation();
           onPaste([clipboardImage]);
+          return;
+        }
+      }
+
+      // Mobile WebView / Capacitor: paste events often omit file payloads.
+      if (isCapacitorNative()) {
+        const apiFiles = await filesFromClipboardApi();
+        if (apiFiles.length > 0) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          onPaste(apiFiles);
         }
       }
     },
