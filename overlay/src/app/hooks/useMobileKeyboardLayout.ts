@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { isCapacitorNative } from '../utils/tauri';
 
 const KEYBOARD_HEIGHT_THRESHOLD_PX = 120;
+const IMMERSIVE_CLASS = 'immersive-landscape-keyboard';
 
 const getIsLandscape = (): boolean => {
   if (typeof window === 'undefined') return false;
@@ -24,9 +26,25 @@ const getKeyboardOpen = (): boolean => {
   return tag === 'INPUT' || tag === 'TEXTAREA';
 };
 
+const setNativeStatusBarHidden = async (hidden: boolean) => {
+  if (!isCapacitorNative()) return;
+  try {
+    const { StatusBar } = await import('@capacitor/status-bar');
+    if (hidden) {
+      await StatusBar.hide();
+    } else {
+      await StatusBar.show();
+    }
+  } catch {
+    // Plugin may be missing in some builds; CSS safe-area collapse still applies.
+  }
+};
+
 export type MobileKeyboardLayout = {
   isLandscape: boolean;
   keyboardOpen: boolean;
+  /** Landscape + keyboard: compact immersive room chrome. */
+  immersive: boolean;
 };
 
 /**
@@ -36,6 +54,8 @@ export type MobileKeyboardLayout = {
 export const useMobileKeyboardLayout = (): MobileKeyboardLayout => {
   const [isLandscape, setIsLandscape] = useState(getIsLandscape);
   const [keyboardOpen, setKeyboardOpen] = useState(getKeyboardOpen);
+
+  const immersive = isLandscape && keyboardOpen;
 
   useEffect(() => {
     const sync = () => {
@@ -63,5 +83,15 @@ export const useMobileKeyboardLayout = (): MobileKeyboardLayout => {
     };
   }, []);
 
-  return { isLandscape, keyboardOpen };
+  useEffect(() => {
+    document.documentElement.classList.toggle(IMMERSIVE_CLASS, immersive);
+    void setNativeStatusBarHidden(immersive);
+
+    return () => {
+      document.documentElement.classList.remove(IMMERSIVE_CLASS);
+      void setNativeStatusBarHidden(false);
+    };
+  }, [immersive]);
+
+  return { isLandscape, keyboardOpen, immersive };
 };

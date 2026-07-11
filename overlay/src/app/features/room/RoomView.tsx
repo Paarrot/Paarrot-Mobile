@@ -14,7 +14,7 @@ import { RoomTimeline } from './RoomTimeline';
 import { RoomViewTyping } from './RoomViewTyping';
 import { RoomTombstone } from './RoomTombstone';
 import { RoomInput } from './RoomInput';
-import { RoomViewFollowing } from './RoomViewFollowing';
+import { RoomViewFollowing, RoomViewFollowingPlaceholder } from './RoomViewFollowing';
 import { Page } from '../../components/page';
 import { RoomViewHeader } from './RoomViewHeader';
 import { useKeyDown } from '../../hooks/useKeyDown';
@@ -65,7 +65,7 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
   const roomViewRef = useRef<HTMLDivElement>(null);
 
   const [hideActivity] = useSetting(settingsAtom, 'hideActivity');
-  const { isLandscape, keyboardOpen } = useMobileKeyboardLayout();
+  const { immersive } = useMobileKeyboardLayout();
 
   const { roomId } = room;
   const editor = useEditor();
@@ -104,9 +104,9 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
     )
   );
 
-  const flushComposer = keyboardOpen || isLandscape;
+  const flushComposer = immersive;
   const composerPadding = flushComposer ? '0' : `0 ${config.space.S400}`;
-  const showHeader = !keyboardOpen;
+  const showHeader = !immersive;
 
   return (
     <Page ref={roomViewRef}>
@@ -134,7 +134,7 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
             data-composer-flush={flushComposer ? 'true' : undefined}
             className={composerCss.ComposerDock}
           >
-            {!hideActivity && (
+            {immersive && !hideActivity && (
               <div className={composerCss.FollowingFloat}>
                 <div className={composerCss.FollowingFloatHit}>
                   <RoomViewFollowing room={room} />
@@ -171,6 +171,12 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
                 </>
               )}
             </div>
+            {!immersive &&
+              (hideActivity ? (
+                <RoomViewFollowingPlaceholder />
+              ) : (
+                <RoomViewFollowing room={room} />
+              ))}
           </Box>
         </>
       )}

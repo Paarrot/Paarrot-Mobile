@@ -97,6 +97,11 @@ body {
   font-variant-ligatures: no-contextual;
 }
 
+/* Landscape + keyboard: reclaim status-bar inset while chrome is hidden. */
+html.immersive-landscape-keyboard {
+  --safe-area-inset-top: 0px;
+}
+
 /* Prevent zalgo text and combining diacritics from overflowing line boundaries */
 p, span, div, a, button, li, td, th, h1, h2, h3, h4, h5, h6 {
   line-height: 1.5;

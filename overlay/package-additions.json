@@ -1,3 +1,5 @@
 {
-  "dependencies": {}
+  "dependencies": {
+    "@capacitor/status-bar": "8.0.1"
+  }
 }

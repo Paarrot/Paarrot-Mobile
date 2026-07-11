@@ -9,11 +9,11 @@ type ClientLayoutProps = {
 };
 
 export function ClientLayout({ nav, children }: ClientLayoutProps) {
-  const { keyboardOpen } = useMobileKeyboardLayout();
+  const { immersive } = useMobileKeyboardLayout();
 
   return (
     <Box grow="Yes">
-      {!keyboardOpen && <Box shrink="No">{nav}</Box>}
+      {!immersive && <Box shrink="No">{nav}</Box>}
       <Box grow="Yes">{children}</Box>
       <DockedCallPanel />
     </Box>
