@@ -45,7 +45,7 @@
   --mx-uc-8: hsl(94, 100%, 35%);
 
   --font-emoji: 'AppleColorEmoji';
-  --font-secondary: 'InterVariable', sans-serif;
+  --font-secondary: 'Inter Variable', sans-serif;
 }
 
 .dark-theme,
@@ -65,7 +65,7 @@
   --mx-uc-7: hsl(243, 100%, 80%);
   --mx-uc-8: hsl(94, 100%, 80%);
 
-  --font-secondary: 'InterVariable', sans-serif;
+  --font-secondary: 'Inter Variable', sans-serif;
 }
 
 html {
