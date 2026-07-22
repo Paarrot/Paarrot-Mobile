@@ -7,6 +7,11 @@ export const isCapacitorAndroid = Boolean(
   cap?.isNativePlatform?.() && cap?.getPlatform?.() === 'android'
 );
 
+// Stationery signatures use Caveat on all platforms (including Android WebView).
+await import('@fontsource/caveat/500.css');
+await import('@fontsource/caveat/600.css');
+await import('@fontsource/caveat/700.css');
+
 if (isCapacitorAndroid) {
   document.documentElement.classList.add('android-capacitor');
   document.documentElement.style.setProperty(

@@ -7,6 +7,7 @@ import * as swipeCss from '../mobile/mobile-gestures.css';
 import { ScreenSize, useScreenSizeContext } from '../../hooks/useScreenSize';
 import { SidebarDockedCallPanel } from '../../features/call/SidebarDockedCallPanel';
 import { useShowCompactMasterView } from '../../hooks/useCompactNav';
+import { isStationeryTheme, useTheme } from '../../hooks/useTheme';
 
 type PageRootProps = {
   nav: ReactNode;
@@ -74,6 +75,7 @@ export function PageNav({
       grow={isMobile ? 'Yes' : undefined}
       className={classNames(css.PageNav({ size }), className)}
       shrink={isMobile ? 'Yes' : 'No'}
+      data-page-nav=""
     >
       <Box grow="Yes" direction="Column">
         {children}
@@ -89,6 +91,7 @@ export const PageNavHeader = as<'header', css.PageNavHeaderVariants>(
       className={classNames(css.PageNavHeader({ outlined }), className)}
       variant="Background"
       size="600"
+      data-folder-tab="nav"
       {...props}
       ref={ref}
     />
@@ -104,13 +107,16 @@ export function PageNavContent({
   scrollRef?: MutableRefObject<HTMLDivElement | null>;
   scrollProps?: React.ComponentProps<typeof Scroll>;
 }) {
+  const theme = useTheme();
+  const hideScrollbar = isStationeryTheme(theme);
+
   return (
     <Box grow="Yes" direction="Column">
       <Scroll
         ref={scrollRef}
         variant="Background"
         direction="Vertical"
-        size="300"
+        size={hideScrollbar ? '0' : '300'}
         hideTrack
         visibility="Hover"
         {...scrollProps}
@@ -126,6 +132,7 @@ export const Page = as<'div'>(({ className, ...props }, ref) => (
     grow="Yes"
     direction="Column"
     className={classNames(ContainerColor({ variant: 'Surface' }), className)}
+    data-page=""
     {...props}
     ref={ref}
   />
@@ -137,6 +144,7 @@ export const PageHeader = as<'div', css.PageHeaderVariants>(
       as="header"
       size="600"
       className={classNames(css.PageHeader({ balance, outlined }), className)}
+      data-folder-tab-bar=""
       {...props}
       ref={ref}
     />

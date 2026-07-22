@@ -132,6 +132,12 @@ body.twilight-theme {
 body.mocha-theme {
   background: linear-gradient(135deg, #1A1614 0%, #242019 50%, #2D2721 100%);
 }
+body.stationery-theme {
+  background-color: #D9D0C0;
+}
+body.stationery-dark-theme {
+  background-color: #11111b;
+}
 #root {
   width: 100%;
   height: 100%;
@@ -438,6 +444,1451 @@ html.mobile-gesture-lock [data-timeline-scroll] {
   transition: outline 0.2s ease;
 }
 
+/* ========== Stationery theme — manila folders, notebook chat, post-it icons ========== */
+/* Shared by .stationery-theme (light) and .stationery-dark-theme via class "stationery" */
+.stationery {
+  --stationery-ink: #2e2a24;
+  --stationery-rule: rgba(90, 130, 185, 0.4);
+  --stationery-margin: rgba(196, 70, 70, 0.5);
+  --stationery-paper: #fffcf5;
+  --stationery-desk: #b9a888;
+  --manila: #e8d4a8;
+  --manila-dark: #d4bc86;
+  --manila-deep: #c4a86e;
+  --manila-edge: #a89058;
+  --manila-border: rgba(168, 144, 88, 0.42);
+  --manila-border-strong: rgba(168, 144, 88, 0.5);
+  --nav-tab: #efe6d4;
+  --nav-tab-hover: #e8dcc6;
+  --folder-tab-room: #f3e6c8;
+  --paper-inset: rgba(255, 255, 255, 0.45);
+  --paper-shadow: rgba(46, 42, 36, 0.12);
+  --paper-shadow-strong: rgba(46, 42, 36, 0.18);
+  --message-hover: rgba(200, 223, 210, 0.28);
+  --message-hover-edge: rgba(61, 122, 95, 0.4);
+  --media-mat: #fffcf5;
+  --postit-1: #ffe566;
+  --postit-2: #ffb3c6;
+  --postit-3: #b8e0d2;
+  --postit-4: #c5d4f0;
+  --postit-5: #f5c6a0;
+  --postit-6: #e0d4f5;
+  --postit-ink: #2e2a24;
+  --postit-rot: 0deg;
+  /* Light paper glows / cast shadows */
+  --glow-rim: #fff;
+  --glow-rim-soft: rgba(255, 255, 255, 0.95);
+  --glow-rim-faint: rgba(255, 255, 255, 0.75);
+  --glow-accent: rgba(255, 214, 80, 0.55);
+  --highlight-inset: rgba(255, 255, 255, 0.35);
+  --highlight-inset-strong: rgba(255, 255, 255, 0.45);
+  --cast-shadow: rgba(46, 42, 36, 0.12);
+  --cast-shadow-mid: rgba(46, 42, 36, 0.16);
+  --cast-shadow-strong: rgba(46, 42, 36, 0.22);
+  --folder-edge: rgba(196, 168, 110, 0.55);
+  --folder-edge-soft: rgba(168, 144, 88, 0.25);
+  --sleeve-paper: var(--sleeve-paper);
+  --sleeve-paper-soft: var(--sleeve-paper-soft);
+  --tape-blend: multiply;
+  --selected-bright: 1.04;
+  --peel-wash-strong: rgba(255, 255, 255, 0.4);
+  --peel-wash-mid: rgba(255, 252, 245, 0.18);
+  --peel-wash-soft: rgba(255, 252, 245, 0.04);
+  --hl-selection: rgba(255, 220, 40, 0.5);
+  --code-mark: rgba(255, 229, 102, 0.4);
+  --hl-streak: rgba(255, 200, 0, 0.07);
+  --hl-wash-a: rgba(255, 220, 40, 0.22);
+  --hl-wash-b: rgba(255, 224, 50, 0.48);
+  --hl-wash-c: rgba(255, 214, 30, 0.42);
+  --hl-wash-d: rgba(255, 220, 40, 0.2);
+  --hl-pink-streak: rgba(255, 80, 140, 0.08);
+  --hl-pink-a: rgba(255, 140, 180, 0.22);
+  --hl-pink-b: rgba(255, 130, 170, 0.48);
+  --hl-pink-c: rgba(255, 110, 155, 0.42);
+  --hl-pink-d: rgba(255, 140, 180, 0.2);
+  --tape-fill-a: rgba(255, 230, 150, 0.25);
+  --tape-fill-b: rgba(255, 210, 110, 0.4);
+  --tape-fill-c: rgba(255, 220, 130, 0.32);
+  --tape-base: rgba(235, 195, 100, 0.32);
+  --tape-border: rgba(160, 120, 40, 0.22);
+  --font-secondary: 'Space Grotesk', 'Inter Variable', var(--font-emoji), sans-serif;
+}
+
+.stationery #root {
+  background: var(--stationery-desk);
+}
+
+/* Chat shell stays plain paper; ruled lines live on the scrolling chatroll */
+.stationery [data-page] {
+  background-color: var(--stationery-paper) !important;
+  background-image: none !important;
+  box-shadow: inset 4px 0 12px var(--cast-shadow);
+}
+
+/* Ruled notebook — red margin is global; horizontal rules reset per message */
+.stationery {
+  --stationery-line: 24px;
+}
+
+.stationery [data-chatroll] {
+  background-color: transparent;
+  /* Continuous red margin only — horizontal rules live on each message */
+  background-image: linear-gradient(
+    90deg,
+    transparent 57px,
+    var(--stationery-margin) 57px,
+    var(--stationery-margin) 59px,
+    transparent 59px
+  );
+  background-attachment: local;
+  padding-top: calc(var(--stationery-line) * 2) !important;
+  padding-bottom: calc(var(--stationery-line) * 2) !important;
+}
+
+.stationery [data-room-timeline-scroll] {
+  background-color: var(--stationery-paper) !important;
+}
+
+/* Each message restarts the ruled grid so scroll never drifts text off the lines */
+.stationery [data-message-item] {
+  background-color: transparent;
+  background-image: repeating-linear-gradient(
+    transparent,
+    transparent calc(var(--stationery-line) - 1px),
+    var(--stationery-rule) calc(var(--stationery-line) - 1px),
+    var(--stationery-rule) var(--stationery-line)
+  );
+  background-position: left top;
+  background-repeat: repeat-y;
+  background-size: 100% var(--stationery-line);
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-top: 0 !important;
+}
+
+/* Separator only when the next item starts a new message group (not a rapid continuation / last msg) */
+.stationery [data-message-item]:has(+ [data-message-item]:not([data-message-collapsed])) {
+  padding-bottom: var(--stationery-line) !important;
+}
+
+.stationery [data-message-item][data-message-collapsed] {
+  margin-top: 0 !important;
+}
+
+.stationery [data-message-body],
+.stationery [data-message-item] p {
+  line-height: var(--stationery-line) !important;
+  margin: 0;
+}
+
+.stationery [data-message-item] [data-message-body] {
+  min-height: var(--stationery-line);
+}
+
+/* Username = ink signature on one ruled line */
+.stationery {
+  --stationery-signature: 'Caveat', 'Segoe Print', 'Bradley Hand', cursive;
+  /* Soft fountain-pen user colors on paper */
+  --mx-uc-1: #2a6a9e;
+  --mx-uc-2: #9a3d7a;
+  --mx-uc-3: #2a8a6a;
+  --mx-uc-4: #c43a5c;
+  --mx-uc-5: #c45a1a;
+  --mx-uc-6: #1a8a8a;
+  --mx-uc-7: #4a4ab0;
+  --mx-uc-8: #5a8a20;
+}
+
+.stationery [data-message-header] {
+  height: var(--stationery-line) !important;
+  min-height: var(--stationery-line) !important;
+  max-height: none !important;
+  align-items: center !important;
+  overflow: visible !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.stationery [data-message-header] > * {
+  min-height: 0;
+  align-items: center !important;
+}
+
+.stationery [data-message-username] {
+  display: inline-flex !important;
+  align-items: center !important;
+  height: var(--stationery-line) !important;
+  max-height: none !important;
+  line-height: 1 !important;
+  overflow: visible !important;
+  font-family: var(--stationery-signature) !important;
+  font-size: 1.25rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+  /* Caveat swashes hang past the em-box — don't clip or shrink them */
+  flex-shrink: 0 !important;
+  min-width: max-content !important;
+  max-width: none !important;
+  padding: 0 0.28em 2px 0.04em !important;
+  margin: 0 !important;
+  text-shadow: 0.4px 0.6px 0 var(--cast-shadow);
+  color: var(--stationery-ink, #2e2a24) !important;
+  text-decoration: none !important;
+  text-overflow: clip !important;
+  white-space: nowrap !important;
+}
+
+.stationery [data-message-username] span,
+.stationery [data-message-username] b {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  line-height: 1 !important;
+  color: inherit !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  max-width: none !important;
+  min-width: 0 !important;
+}
+
+/* Their color as a pen underline under the ink name */
+.stationery [data-message-username][data-username-accent],
+.stationery [data-username-accent] {
+  text-decoration-line: underline !important;
+  text-decoration-style: solid !important;
+  text-decoration-color: var(--username-accent, #3d7a5f) !important;
+  text-decoration-thickness: 2px !important;
+  text-underline-offset: 1px !important;
+  text-decoration-skip-ink: none !important;
+  border-bottom: none !important;
+}
+
+.stationery [data-message-username][data-username-accent]:hover,
+.stationery [data-message-username][data-username-accent]:focus-visible,
+.stationery [data-message-username]:hover,
+.stationery [data-message-username]:focus-visible {
+  text-decoration-line: underline !important;
+  text-decoration-color: var(--username-accent, var(--stationery-ink)) !important;
+  text-decoration-thickness: 2.5px !important;
+  text-underline-offset: 1px !important;
+  border-bottom: none !important;
+}
+
+.stationery [data-message-header] time {
+  font-family: var(--stationery-signature) !important;
+  font-size: 0.95rem !important;
+  line-height: 1 !important;
+  opacity: 0.55;
+  align-self: center;
+}
+
+/* Reactions float in the inter-message gap — zero layout height keeps the 24px grid */
+.stationery [data-reactions] {
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  gap: 10px !important;
+  overflow: visible !important;
+  position: relative;
+  z-index: 2;
+  align-self: flex-start;
+  /* Sit just below the message, into the ruled separator — not on the text */
+  transform: translateY(-1px);
+  pointer-events: none;
+}
+
+.stationery [data-reaction] {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 2px !important;
+  gap: 6px !important;
+  align-items: center !important;
+  box-shadow: none !important;
+  transition: transform 0.18s ease !important;
+  pointer-events: auto;
+}
+
+.stationery [data-reaction]:hover,
+.stationery [data-reaction]:focus-visible,
+.stationery button[data-reaction]:hover {
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: translateY(-2px) scale(1.05);
+}
+
+.stationery [data-reaction][aria-pressed='true'] {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.stationery [data-reaction][aria-pressed='true'] [data-reaction-sticker] {
+  filter:
+    drop-shadow(0 0 0.6px var(--glow-rim))
+    drop-shadow(0 0 1.2px var(--glow-rim))
+    drop-shadow(0 0 2px var(--glow-rim))
+    drop-shadow(0.5px 0.5px 0 var(--glow-rim-soft))
+    drop-shadow(-1px -1px 0 var(--glow-rim-faint))
+    drop-shadow(1px 2px 0 var(--cast-shadow))
+    drop-shadow(2px 3px 3px var(--cast-shadow-strong))
+    drop-shadow(0 0 3px var(--glow-accent));
+}
+
+.stationery [data-reaction-stack-layer] {
+  font-size: 1.25rem !important;
+  line-height: 1 !important;
+  /* Room for a wider fan */
+  padding: 6px 14px 4px 6px;
+}
+
+.stationery [data-reaction-sticker] {
+  font-size: 1.25rem !important;
+  line-height: 1 !important;
+  max-width: none !important;
+  /* Same white sticker outline + bevel as jumbo emoji */
+  filter:
+    drop-shadow(0 0 0.6px var(--glow-rim))
+    drop-shadow(0 0 1.2px var(--glow-rim))
+    drop-shadow(0 0 2px var(--glow-rim))
+    drop-shadow(0.5px 0.5px 0 var(--glow-rim-soft))
+    drop-shadow(-1px -1px 0 var(--glow-rim-faint))
+    drop-shadow(1px 2px 0 var(--cast-shadow))
+    drop-shadow(2px 3px 3px var(--cast-shadow-strong));
+  /* Clearer multi-sticker fan */
+  transform: translate(
+      calc(var(--sticker-i, 0) * 8px - 2px),
+      calc(var(--sticker-i, 0) * -6px)
+    )
+    rotate(calc((var(--sticker-i, 0) - 1) * 14deg)) !important;
+}
+
+.stationery [data-reaction-sticker] img {
+  height: 1.25em !important;
+  width: auto !important;
+  max-width: 2.2em !important;
+  object-fit: contain;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--media-mat) 35%, transparent);
+  box-shadow: inset 0 0 0 2px var(--glow-rim-soft);
+}
+
+.stationery [data-reaction-count] {
+  font-family: var(--stationery-signature) !important;
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  color: var(--stationery-ink) !important;
+  opacity: 0.7;
+  min-width: 0.6em;
+  text-align: center;
+  align-self: flex-end;
+  padding-bottom: 2px;
+  transform: translate(4px, -2px);
+}
+
+/* Avatar column = two ruled lines so the row height stays on-grid */
+.stationery [data-message-avatar] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: var(--stationery-line);
+  height: calc(var(--stationery-line) * 2);
+  min-height: calc(var(--stationery-line) * 2);
+  padding-top: 0 !important;
+}
+
+.stationery [data-message-avatar] > * {
+  width: var(--stationery-line) !important;
+  height: var(--stationery-line) !important;
+  min-width: var(--stationery-line) !important;
+  min-height: var(--stationery-line) !important;
+}
+
+/* Jumbo emoji → sticker on the notebook grid (3 ruled lines tall) */
+.stationery [data-jumbo-emoji] {
+  font-size: calc(var(--stationery-line) * 3) !important;
+  line-height: calc(var(--stationery-line) * 3) !important;
+  min-height: calc(var(--stationery-line) * 3);
+  overflow: visible !important;
+}
+
+.stationery [data-jumbo-emoji] img,
+.stationery [data-jumbo-emoji] span span {
+  border-radius: 8px;
+  /* White sticker outline + soft bevel / lift */
+  filter:
+    drop-shadow(0 0 0.6px var(--glow-rim))
+    drop-shadow(0 0 1.2px var(--glow-rim))
+    drop-shadow(0 0 2px var(--glow-rim))
+    drop-shadow(0.5px 0.5px 0 var(--glow-rim-soft))
+    drop-shadow(-1px -1px 0 var(--glow-rim-faint))
+    drop-shadow(1px 2px 0 var(--cast-shadow))
+    drop-shadow(2px 3px 3px var(--cast-shadow-strong));
+  transform: rotate(-5deg);
+  transform-origin: center center;
+}
+
+.stationery [data-jumbo-emoji] img {
+  /* Custom emoji stickers get a paper edge */
+  background: color-mix(in srgb, var(--media-mat) 35%, transparent);
+  box-shadow: inset 0 0 0 2px var(--glow-rim-soft);
+}
+
+.stationery [data-message-item]:nth-child(2n) [data-jumbo-emoji] img,
+.stationery [data-message-item]:nth-child(2n) [data-jumbo-emoji] span span {
+  transform: rotate(5deg);
+}
+
+/* Left bars = manila folders */
+.stationery [data-sidebar],
+.stationery [data-page-nav] {
+  position: relative;
+  background:
+    linear-gradient(90deg, rgba(168, 144, 88, 0.18) 0 1px, transparent 1px),
+    linear-gradient(180deg, var(--manila) 0%, var(--manila-dark) 100%) !important;
+  background-color: var(--manila) !important;
+  border-right: 1px solid var(--manila-edge) !important;
+  box-shadow:
+    3px 0 0 var(--folder-edge),
+    6px 0 0 var(--folder-edge-soft),
+    4px 0 14px var(--cast-shadow);
+}
+
+/* Let space post-its peek past the left bar edge */
+.stationery [data-sidebar] {
+  overflow: visible !important;
+  z-index: 20;
+}
+
+.stationery [data-page-nav] {
+  z-index: 1;
+}
+
+/*
+ * overflow-y: scroll forces overflow-x to clip. Widen the scrollport with
+ * negative margin + matching padding so post-its can hang into that gutter
+ * (over the room list) without being cropped.
+ */
+.stationery [data-sidebar-scroll-region],
+.stationery [data-sidebar-sticky] {
+  overflow: visible !important;
+}
+
+.stationery [data-sidebar-scroll] {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  margin-right: -25px !important;
+  padding-right: 25px !important;
+  width: calc(100% + 25px) !important;
+  max-width: none !important;
+  box-sizing: border-box !important;
+}
+
+.stationery [data-sidebar] > *,
+.stationery [data-sidebar] [class*='SidebarStack'],
+.stationery [data-sidebar-item],
+.stationery [data-sidebar-folder] {
+  overflow: visible !important;
+}
+
+/* Bunch space icons closer together */
+.stationery [data-sidebar] [class*='SidebarStack'] {
+  gap: 8px !important;
+  padding-top: 8px !important;
+  padding-bottom: 8px !important;
+}
+
+.stationery [data-sidebar-item],
+.stationery [data-sidebar-folder] {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+/* Folder tab on top of sidebar only (nav/room headers use Chrome trapezoid tabs) */
+.stationery [data-sidebar]::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  width: 36px;
+  height: 14px;
+  background: var(--manila-deep);
+  border-radius: 3px 3px 0 0;
+  box-shadow: inset 0 1px 0 var(--highlight-inset);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0.85;
+}
+
+.stationery [data-page-nav]::before {
+  content: none !important;
+  display: none !important;
+}
+
+/* —— Chrome-style folder tabs: straight steep sides, rounded top only —— */
+.stationery [data-folder-tab] {
+  --tab-slope: 12px;
+  --tab-fill: var(--manila);
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+  width: fit-content !important;
+  max-width: calc(100% - 16px) !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 8px 8px 0 !important;
+  padding: 5px calc(var(--tab-slope) + 10px) 6px !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: var(--tab-fill) !important;
+  background-color: var(--tab-fill) !important;
+  color: var(--stationery-ink) !important;
+  filter: none;
+  box-shadow: none !important;
+  /* Steeper straight sides; only the top corners round */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 40' preserveAspectRatio='none'%3E%3Cpath fill='black' d='M0 40 L8 7 L8 5 C8 2 10 0 14 0 L186 0 C190 0 192 2 192 5 L192 7 L200 40 Z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 40' preserveAspectRatio='none'%3E%3Cpath fill='black' d='M0 40 L8 7 L8 5 C8 2 10 0 14 0 L186 0 C190 0 192 2 192 5 L192 7 L200 40 Z'/%3E%3C/svg%3E");
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-mode: alpha;
+  mask-mode: alpha;
+}
+
+.stationery [data-folder-tab]::after {
+  content: none !important;
+  display: none !important;
+}
+
+.stationery [data-folder-tab='nav'] {
+  --tab-slope: 12px;
+  --tab-fill: var(--manila);
+  margin: 8px 8px 0 10px !important;
+  display: flex !important;
+  align-items: center !important;
+}
+
+.stationery [data-folder-tab='nav'] > * {
+  flex-grow: 0 !important;
+  width: auto !important;
+  max-width: 100% !important;
+}
+
+.stationery [data-folder-tab='room'] {
+  --tab-slope: 12px;
+  --tab-fill: var(--folder-tab-room);
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  max-width: min(60%, 420px) !important;
+  background: var(--folder-tab-fill, var(--tab-fill)) !important;
+  background-color: var(--folder-tab-fill, var(--tab-fill)) !important;
+}
+
+/* Manila strip behind / beside the channel title tab */
+.stationery [data-folder-tab-bar] {
+  background: var(--manila) !important;
+  background-color: var(--manila) !important;
+  border: none !important;
+  border-bottom: 1px solid var(--manila-border) !important;
+  box-shadow: none !important;
+  padding-top: 6px !important;
+  padding-bottom: 0 !important;
+  align-items: flex-end !important;
+  gap: 8px;
+  overflow: visible !important;
+}
+
+.stationery [data-folder-tab] [class*='Text'],
+.stationery [data-folder-tab] span {
+  position: relative;
+  z-index: 1;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  line-height: 1.25 !important;
+}
+
+.stationery [data-folder-tab='room'] [class*='Avatar'],
+.stationery [data-folder-tab='room'] [data-avatar] {
+  width: 22px !important;
+  height: 22px !important;
+  min-width: 22px !important;
+  min-height: 22px !important;
+}
+
+/* Generic headers that aren't folder tabs stay quiet */
+.stationery header:not([data-folder-tab]):not([data-folder-tab-bar]) {
+  background: color-mix(in srgb, var(--manila) 92%, transparent) !important;
+  border-bottom: 1px solid var(--manila-border);
+}
+
+/* —— Space icons as oversized post-its that peek past the left bar —— */
+.stationery [data-sidebar-item],
+.stationery [data-sidebar-folder] {
+  z-index: 20;
+}
+
+.stationery [data-sidebar-avatar] {
+  --postit-rot: -2deg;
+  position: relative;
+  width: 62px !important;
+  height: 62px !important;
+  min-width: 62px !important;
+  min-height: 62px !important;
+  margin-right: 0 !important;
+  border-radius: 2px !important;
+  overflow: hidden !important;
+  padding: 4px;
+  box-sizing: border-box;
+  background: var(--postit-1) !important;
+  box-shadow:
+    0 1px 0 var(--highlight-inset) inset,
+    0 4px 2px var(--cast-shadow),
+    0 8px 12px var(--cast-shadow-mid),
+    0 14px 20px var(--cast-shadow),
+    inset 0 -6px 10px rgba(0, 0, 0, 0.05) !important;
+  border: none !important;
+  /* Sit past the manila bar edge into the room-list gutter */
+  transform: rotate(var(--postit-rot)) translateX(16px);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+  z-index: 21;
+}
+
+.stationery [data-sidebar-avatar] > * {
+  border-radius: 1px !important;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+/* Initials / icons scale with the oversized post-it (+40%); always dark on paper */
+.stationery [data-sidebar-avatar],
+.stationery [data-sidebar-avatar] span,
+.stationery [data-sidebar-avatar] p,
+.stationery [data-sidebar-avatar] [class*='Text'] {
+  color: var(--postit-ink) !important;
+}
+
+.stationery [data-sidebar-avatar] span,
+.stationery [data-sidebar-avatar] p,
+.stationery [data-sidebar-avatar] [class*='Text'] {
+  font-size: 1.4em !important;
+  line-height: 1.1 !important;
+}
+
+.stationery [data-sidebar-avatar] svg {
+  width: 1.4em !important;
+  height: 1.4em !important;
+  min-width: 22px !important;
+  min-height: 22px !important;
+  color: var(--postit-ink) !important;
+  fill: none !important;
+}
+
+.stationery [data-sidebar-avatar]:hover {
+  transform: rotate(var(--postit-rot)) translateX(16px) translateY(-2px) scale(1.06);
+  box-shadow:
+    0 1px 0 var(--highlight-inset-strong) inset,
+    0 5px 3px var(--cast-shadow),
+    0 10px 16px var(--cast-shadow-mid),
+    0 18px 28px var(--cast-shadow),
+    inset 0 -6px 10px rgba(0, 0, 0, 0.05) !important;
+  z-index: 22;
+}
+
+.stationery [data-sidebar-item]:nth-child(6n + 1) [data-sidebar-avatar],
+.stationery [data-sidebar-folder] [data-sidebar-avatar]:nth-child(6n + 1) {
+  --postit-rot: -4deg;
+  background: var(--postit-1) !important;
+}
+.stationery [data-sidebar-item]:nth-child(6n + 2) [data-sidebar-avatar],
+.stationery [data-sidebar-folder] [data-sidebar-avatar]:nth-child(6n + 2) {
+  --postit-rot: 3deg;
+  background: var(--postit-2) !important;
+}
+.stationery [data-sidebar-item]:nth-child(6n + 3) [data-sidebar-avatar],
+.stationery [data-sidebar-folder] [data-sidebar-avatar]:nth-child(6n + 3) {
+  --postit-rot: -2deg;
+  background: var(--postit-3) !important;
+}
+.stationery [data-sidebar-item]:nth-child(6n + 4) [data-sidebar-avatar],
+.stationery [data-sidebar-folder] [data-sidebar-avatar]:nth-child(6n + 4) {
+  --postit-rot: 5deg;
+  background: var(--postit-4) !important;
+}
+.stationery [data-sidebar-item]:nth-child(6n + 5) [data-sidebar-avatar],
+.stationery [data-sidebar-folder] [data-sidebar-avatar]:nth-child(6n + 5) {
+  --postit-rot: -6deg;
+  background: var(--postit-5) !important;
+}
+.stationery [data-sidebar-item]:nth-child(6n + 6) [data-sidebar-avatar],
+.stationery [data-sidebar-folder] [data-sidebar-avatar]:nth-child(6n + 6) {
+  --postit-rot: 2deg;
+  background: var(--postit-6) !important;
+}
+
+/* Opened space folder = nested papers in a manila sleeve */
+.stationery [data-sidebar-folder] {
+  position: relative;
+  border-radius: 2px !important;
+  background: linear-gradient(180deg, var(--manila-deep) 0%, var(--manila-dark) 100%) !important;
+  outline-color: var(--cast-shadow) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--highlight-inset),
+    1px 2px 4px var(--cast-shadow);
+  transform: rotate(-0.5deg);
+  overflow: visible !important;
+  gap: 6px !important;
+}
+
+/* Vertical paper strip down expanded folder contents */
+.stationery [data-sidebar-folder]::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 40px;
+  bottom: 6px;
+  width: 22px;
+  margin-left: -11px;
+  background:
+    linear-gradient(90deg, transparent 0 2px, var(--sleeve-paper) 2px 20px, transparent 20px),
+    repeating-linear-gradient(
+      transparent,
+      transparent 11px,
+      rgba(90, 130, 185, 0.2) 11px,
+      rgba(90, 130, 185, 0.2) 12px
+    );
+  background-color: var(--sleeve-paper-soft);
+  border-radius: 1px;
+  box-shadow: 1px 0 2px var(--cast-shadow);
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+}
+
+.stationery [data-sidebar-folder]:has([data-sidebar-item] + [data-sidebar-item])::after,
+.stationery [data-sidebar-folder]:has([data-sidebar-avatar] + [data-sidebar-item])::after {
+  opacity: 1;
+}
+
+.stationery [data-sidebar-folder] [data-sidebar-item],
+.stationery [data-sidebar-folder] [data-sidebar-avatar] {
+  position: relative;
+  z-index: 1;
+}
+
+/* Active indicator = folder tab notch */
+.stationery [data-sidebar-item]::before {
+  background: var(--manila-deep) !important;
+  border-radius: 0 2px 2px 0 !important;
+  width: 4px !important;
+  box-shadow: 1px 0 0 var(--highlight-inset);
+}
+
+/* —— Room list: each dropdown is its own paper sheet of post-its —— */
+.stationery [data-nav-category] {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.stationery [data-nav-category][data-nav-dropdown] {
+  margin-bottom: 10px;
+}
+
+.stationery [data-nav-category]::before,
+.stationery [data-nav-depth]::before {
+  content: none !important;
+  display: none !important;
+}
+
+/* Tab sits behind the paper; no gap between them */
+.stationery [data-nav-dropdown] > *:has([data-nav-category-btn]) {
+  position: relative;
+  z-index: 1;
+  margin: 0 !important;
+  padding: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  gap: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.stationery [data-nav-category-btn] {
+  background: var(--nav-tab) !important;
+  color: var(--stationery-ink) !important;
+  border-radius: 6px 6px 0 0 !important;
+  border: 1px solid var(--manila-border-strong) !important;
+  border-bottom: none !important;
+  box-shadow: inset 0 1px 0 var(--highlight-inset-strong) !important;
+  padding: 4px 12px !important;
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 6px !important;
+  position: relative;
+  z-index: 1;
+}
+
+.stationery [data-nav-category-btn]:hover,
+.stationery [data-nav-category-btn]:focus-visible {
+  background: var(--nav-tab-hover) !important;
+}
+
+/* Paper sheet in front of the tab, flush against it */
+.stationery [data-nav-rooms] {
+  --postit-rot: -0.6deg;
+  --postit-bg: var(--postit-1);
+  --postit-shift: 0px;
+  position: relative;
+  z-index: 2;
+  margin: -1px 2px 0 !important;
+  padding: 10px 8px 14px !important;
+  background-color: var(--stationery-paper) !important;
+  background-image:
+    linear-gradient(
+      90deg,
+      transparent 12px,
+      rgba(196, 70, 70, 0.35) 12px,
+      rgba(196, 70, 70, 0.35) 13px,
+      transparent 13px
+    ),
+    repeating-linear-gradient(
+      transparent,
+      transparent 14px,
+      rgba(90, 130, 185, 0.18) 14px,
+      rgba(90, 130, 185, 0.18) 15px
+    );
+  border: 1px solid var(--manila-border);
+  border-radius: 0 2px 2px 2px;
+  box-shadow:
+    1px 2px 4px var(--paper-shadow),
+    2px 5px 12px var(--paper-shadow),
+    inset 0 0 0 1px var(--paper-inset);
+  overflow: visible !important;
+}
+
+/* No scrollbar on the channel list / page nav (still scrollable) */
+.stationery [data-page-nav] ::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+.stationery [data-page-nav] {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.stationery [data-page-nav] [class*='ScrollTrack'],
+.stationery [data-page-nav] [class*='ScrollThumb'] {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.stationery [data-nav-rooms],
+.stationery [data-nav-room-list] {
+  overflow: visible !important;
+  scrollbar-width: none !important;
+}
+
+/* Inner virtualizer list — do not fight absolute tile positioning */
+.stationery [data-nav-rooms] > [data-nav-room-list],
+.stationery [data-nav-rooms][data-nav-room-list] {
+  position: relative;
+  display: block;
+  overflow: visible;
+}
+
+.stationery [data-nav-rooms] [data-nav-room-list] > * {
+  overflow: visible !important;
+}
+
+/* Each channel = post-it; next note sits on top of the previous bottom edge */
+.stationery [data-nav-rooms] [data-nav-item] {
+  --postit-rot: -0.4deg;
+  --postit-bg: var(--postit-1);
+  --postit-shift: 0px;
+  position: relative !important;
+  z-index: auto !important;
+  display: block !important;
+  width: calc(100% - 6px - var(--postit-shift)) !important;
+  min-height: 40px !important;
+  height: 40px !important;
+  max-height: 40px !important;
+  margin: 0 0 -4px !important;
+  margin-left: calc(2px + var(--postit-shift)) !important;
+  padding: 0 !important;
+  border-radius: 1px 1px 2px 1px !important;
+  background: var(--postit-bg) !important;
+  color: var(--postit-ink) !important;
+  box-shadow:
+    0 1px 0 var(--highlight-inset-strong) inset,
+    0 1px 1px var(--cast-shadow),
+    1px 2px 3px var(--cast-shadow) !important;
+  outline: none !important;
+  transform: rotate(var(--postit-rot));
+  transform-origin: 50% center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+  overflow: hidden !important;
+}
+
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 1)[data-nav-item],
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 1) [data-nav-item],
+.stationery [data-nav-rooms][data-nav-room-list] > *:nth-child(6n + 1)[data-nav-item] {
+  --postit-rot: -0.6deg;
+  --postit-bg: var(--postit-1);
+  --postit-shift: 0px;
+}
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 2)[data-nav-item],
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 2) [data-nav-item],
+.stationery [data-nav-rooms][data-nav-room-list] > *:nth-child(6n + 2)[data-nav-item] {
+  --postit-rot: 0.5deg;
+  --postit-bg: var(--postit-2);
+  --postit-shift: 2px;
+}
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 3)[data-nav-item],
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 3) [data-nav-item],
+.stationery [data-nav-rooms][data-nav-room-list] > *:nth-child(6n + 3)[data-nav-item] {
+  --postit-rot: -0.3deg;
+  --postit-bg: var(--postit-3);
+  --postit-shift: 1px;
+}
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 4)[data-nav-item],
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 4) [data-nav-item],
+.stationery [data-nav-rooms][data-nav-room-list] > *:nth-child(6n + 4)[data-nav-item] {
+  --postit-rot: 0.7deg;
+  --postit-bg: var(--postit-4);
+  --postit-shift: 2px;
+}
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 5)[data-nav-item],
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 5) [data-nav-item],
+.stationery [data-nav-rooms][data-nav-room-list] > *:nth-child(6n + 5)[data-nav-item] {
+  --postit-rot: -0.5deg;
+  --postit-bg: var(--postit-5);
+  --postit-shift: 0px;
+}
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 6)[data-nav-item],
+.stationery [data-nav-rooms] > [data-nav-room-list] > *:nth-child(6n + 6) [data-nav-item],
+.stationery [data-nav-rooms][data-nav-room-list] > *:nth-child(6n + 6)[data-nav-item] {
+  --postit-rot: 0.4deg;
+  --postit-bg: var(--postit-6);
+  --postit-shift: 1px;
+}
+
+.stationery [data-nav-rooms] [data-nav-item]:hover,
+.stationery [data-nav-rooms] [data-nav-item][data-hover='true'],
+.stationery [data-nav-rooms] [data-nav-item][aria-selected='true'] {
+  z-index: auto !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-item]:hover,
+.stationery [data-nav-rooms] [data-nav-item][data-hover='true'] {
+  box-shadow:
+    0 1px 0 var(--highlight-inset-strong) inset,
+    0 2px 2px var(--cast-shadow),
+    2px 4px 8px var(--cast-shadow-mid) !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-item][aria-selected='true'] {
+  box-shadow:
+    0 0 0 1.5px var(--message-hover-edge),
+    0 1px 0 var(--highlight-inset-strong) inset,
+    0 2px 3px var(--cast-shadow),
+    2px 4px 8px var(--cast-shadow) !important;
+  filter: brightness(var(--selected-bright));
+}
+
+/* Row guts */
+.stationery [data-nav-rooms] [data-nav-item] > * {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-inline: 8px 10px !important;
+  min-height: 40px !important;
+  height: 40px !important;
+  align-items: center !important;
+  color: var(--postit-ink) !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-item] span,
+.stationery [data-nav-rooms] [data-nav-item] p,
+.stationery [data-nav-rooms] [data-nav-item] [class*='Text'] {
+  color: var(--postit-ink) !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-item] svg {
+  color: var(--postit-ink) !important;
+  fill: none !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-item] [data-avatar],
+.stationery [data-nav-rooms] [data-nav-item] [class*='Avatar'] {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-item] svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+/* Nested depth: still post-its, stepped in on the paper */
+.stationery [data-nav-rooms] [data-nav-depth] {
+  min-height: 0 !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  padding-left: 0 !important;
+  box-shadow: none !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-depth='1'] {
+  padding-left: 22px !important;
+}
+.stationery [data-nav-rooms] [data-nav-depth='2'] {
+  padding-left: 40px !important;
+}
+.stationery [data-nav-rooms] [data-nav-depth='3'] {
+  padding-left: 58px !important;
+}
+.stationery [data-nav-rooms] [data-nav-depth='4'],
+.stationery [data-nav-rooms] [data-nav-depth='5'],
+.stationery [data-nav-rooms] [data-nav-depth='6'] {
+  padding-left: 76px !important;
+}
+
+.stationery [data-nav-rooms] [data-nav-depth]:not([data-nav-depth='0']) [data-nav-item] {
+  width: calc(100% - 8px - var(--postit-shift)) !important;
+  margin-left: calc(2px + var(--postit-shift)) !important;
+}
+
+/* Hide tree glyphs — the inset post-it shift carries nesting */
+.stationery [data-nav-rooms] [data-nav-depth] > span {
+  display: none !important;
+}
+
+/* Lobby / search above the paper stay quiet ink chips, not post-its */
+.stationery [data-page-nav] [data-nav-category]:not([data-nav-rooms]) > [data-nav-item] {
+  min-height: 28px !important;
+  border-radius: 2px !important;
+  background: color-mix(in srgb, var(--media-mat) 35%, transparent) !important;
+  color: var(--stationery-ink) !important;
+  box-shadow: none !important;
+  transform: none !important;
+  margin: 0 2px !important;
+}
+
+.stationery [data-page-nav] [data-nav-category]:not([data-nav-rooms]) > [data-nav-item][aria-selected='true'] {
+  background: var(--sleeve-paper-soft) !important;
+  box-shadow: inset 3px 0 0 var(--message-hover-edge) !important;
+}
+
+.stationery button:hover:not([data-sidebar-avatar]):not([data-reaction]),
+.stationery [role='button']:hover:not([data-sidebar-avatar]):not([data-reaction]) {
+  box-shadow: 0 2px 0 var(--cast-shadow);
+}
+
+.stationery [data-message-item] {
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+  border-radius: 2px;
+  /* Keep overflowing tape/peel inside this message's paint layer */
+  isolation: isolate;
+}
+
+.stationery [data-message-item]:hover {
+  background-color: var(--message-hover);
+  box-shadow: inset 3px 0 0 var(--message-hover-edge);
+}
+
+/* Chat images / media = photo scraps with clear corner tape + slight tilt */
+.stationery [data-stationery-media] {
+  --media-rot: -0.6deg;
+  position: relative;
+  transform: rotate(var(--media-rot));
+  transform-origin: center center;
+  border-radius: 0 !important;
+  overflow: visible;
+  background: var(--media-mat) !important;
+  box-shadow:
+    0 1px 2px var(--cast-shadow),
+    2px 4px 8px var(--cast-shadow-mid),
+    4px 10px 20px var(--cast-shadow),
+    0 0 0 3px var(--media-mat) !important;
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  isolation: isolate;
+  overflow-anchor: none;
+  perspective: 520px;
+  transform-style: preserve-3d;
+}
+
+.stationery [data-stationery-media],
+.stationery [data-stationery-media] *,
+.stationery [data-stationery-media] img,
+.stationery [data-stationery-media] video {
+  border-radius: 0 !important;
+}
+
+.stationery [data-stationery-media] > *:not([data-stationery-peel]) {
+  overflow: hidden;
+}
+
+.stationery [data-stationery-media]::before,
+.stationery [data-stationery-media]::after {
+  content: '';
+  position: absolute;
+  width: 48px;
+  height: 16px;
+  /* Mid-weight film — readable ink, still reads as tape */
+  background:
+    linear-gradient(
+      105deg,
+      var(--tape-fill-a) 0%,
+      var(--tape-fill-b) 45%,
+      var(--tape-fill-c) 100%
+    ),
+    var(--tape-base);
+  border: 1px solid var(--tape-border);
+  box-shadow:
+    0 1px 2px var(--cast-shadow),
+    1px 2px 3px var(--cast-shadow),
+    inset 0 1px 0 var(--highlight-inset-strong);
+  pointer-events: none;
+  z-index: 2;
+  mix-blend-mode: var(--tape-blend);
+  opacity: 0.88;
+}
+
+/* Default pair: top-left + bottom-right tape */
+.stationery [data-stationery-media]::before {
+  top: -2px;
+  left: -6px;
+  transform: rotate(-42deg);
+}
+
+.stationery [data-stationery-media]::after {
+  bottom: -2px;
+  right: -6px;
+  left: auto;
+  top: auto;
+  transform: rotate(-42deg);
+}
+
+/* Alternate pair: top-right + bottom-left tape (stable per media seed) */
+.stationery [data-stationery-media][data-tape-alt]::before {
+  top: -2px;
+  left: auto;
+  right: -6px;
+  transform: rotate(42deg);
+}
+
+.stationery [data-stationery-media][data-tape-alt]::after {
+  bottom: -2px;
+  right: auto;
+  left: -6px;
+  transform: rotate(42deg);
+}
+
+/* Mouse-driven corner peel — hinges on the fold (halfway to cursor) */
+.stationery [data-stationery-peel] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+  opacity: 0;
+  background-image: var(--peel-img);
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  box-shadow: none;
+  transition: none;
+  transform-style: preserve-3d;
+  /* Pivot on fold midpoint; axis along the fold edge */
+  transform: rotate3d(
+    var(--peel-axis-x, 1),
+    var(--peel-axis-y, 0),
+    0,
+    var(--peel-hinge, 0deg)
+  );
+  filter: drop-shadow(1px 2px 4px var(--cast-shadow-strong));
+  backface-visibility: hidden;
+}
+
+/* Light wash: builds from the fold, brightest at the tip */
+.stationery [data-stationery-peel]::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle var(--peel-grad-r, 40px) at var(--peel-tip-x, 0) var(--peel-tip-y, 0),
+    var(--peel-wash-strong) 0%,
+    var(--peel-wash-mid) 50%,
+    var(--peel-wash-soft) 78%,
+    transparent 100%
+  );
+}
+
+.stationery [data-stationery-media]:hover {
+  box-shadow:
+    0 2px 4px var(--cast-shadow),
+    3px 8px 14px var(--cast-shadow-mid),
+    6px 16px 28px var(--cast-shadow),
+    0 0 0 3px var(--media-mat) !important;
+  /* Don't raise above neighboring messages (tape was covering them) */
+}
+
+
+.stationery [data-message-item] [data-mx-spoiler],
+.stationery code {
+  background: var(--code-mark);
+  border-radius: 2px;
+  box-shadow: 0 1px 0 var(--cast-shadow);
+}
+
+/* Highlighter-marker strokes for selection, search hits, and @mentions */
+.stationery {
+  --hl-yellow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='28' viewBox='0 0 160 28' preserveAspectRatio='none'%3E%3Cdefs%3E%3Cfilter id='r' x='-8%25' y='-30%25' width='116%25' height='160%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.55 0.28' numOctaves='3' seed='7' result='n'/%3E%3CfeDisplacementMap in='SourceGraphic' in2='n' scale='3.2' xChannelSelector='R' yChannelSelector='G'/%3E%3C/filter%3E%3C/defs%3E%3Cg filter='url(%23r)'%3E%3Cpath d='M3 9.5 C28 6.5 52 11 78 8.5 C104 6 128 10.5 157 8.2 L156.5 20.8 C130 22.5 105 18.5 79 21 C53 23.5 28 19.5 3.5 21.2 Z' fill='%23ffe033' fill-opacity='0.62'/%3E%3Cpath d='M5 11.2 C36 9 62 13.5 90 10.8 C118 8.2 140 12.5 155 11 L154.2 18.6 C138 19.8 116 16.2 88 18.5 C60 20.8 34 16.8 5.5 18.2 Z' fill='%23ffd000' fill-opacity='0.38'/%3E%3Cpath d='M8 12.8 C40 11.5 70 14.8 100 12.2 C125 10.2 145 13.5 152 12.8 L151.5 16.8 C142 17.2 124 14.5 99 16.5 C70 18.8 42 15.5 8.5 16.5 Z' fill='%23fff06a' fill-opacity='0.28'/%3E%3C/g%3E%3C/svg%3E");
+  --hl-pink: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='28' viewBox='0 0 160 28' preserveAspectRatio='none'%3E%3Cdefs%3E%3Cfilter id='r' x='-8%25' y='-30%25' width='116%25' height='160%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.55 0.28' numOctaves='3' seed='11' result='n'/%3E%3CfeDisplacementMap in='SourceGraphic' in2='n' scale='3.2' xChannelSelector='R' yChannelSelector='G'/%3E%3C/filter%3E%3C/defs%3E%3Cg filter='url(%23r)'%3E%3Cpath d='M3 9.5 C28 6.5 52 11 78 8.5 C104 6 128 10.5 157 8.2 L156.5 20.8 C130 22.5 105 18.5 79 21 C53 23.5 28 19.5 3.5 21.2 Z' fill='%23ff8cb4' fill-opacity='0.62'/%3E%3Cpath d='M5 11.2 C36 9 62 13.5 90 10.8 C118 8.2 140 12.5 155 11 L154.2 18.6 C138 19.8 116 16.2 88 18.5 C60 20.8 34 16.8 5.5 18.2 Z' fill='%23ff6a9a' fill-opacity='0.4'/%3E%3Cpath d='M8 12.8 C40 11.5 70 14.8 100 12.2 C125 10.2 145 13.5 152 12.8 L151.5 16.8 C142 17.2 124 14.5 99 16.5 C70 18.8 42 15.5 8.5 16.5 Z' fill='%23ffb0d0' fill-opacity='0.3'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+.stationery ::selection {
+  background: var(--hl-selection);
+  color: inherit;
+}
+
+.stationery ::-moz-selection {
+  background: var(--hl-selection);
+  color: inherit;
+}
+
+.stationery [data-text-highlight],
+.stationery [data-mention-id] {
+  background-color: transparent !important;
+  /* Three overlapping marker passes + fiber streaks */
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      transparent 0,
+      transparent 2px,
+      var(--hl-streak) 2px,
+      var(--hl-streak) 3px
+    ),
+    var(--hl-yellow),
+    linear-gradient(
+      101deg,
+      transparent 0%,
+      var(--hl-wash-a) 3%,
+      var(--hl-wash-b) 12%,
+      var(--hl-wash-c) 88%,
+      var(--hl-wash-d) 97%,
+      transparent 100%
+    ) !important;
+  /* Oversized L/R so the marker bleeds past the glyphs */
+  background-size:
+    calc(100% + 0.45em) 0.72em,
+    calc(100% + 0.55em) 0.95em,
+    calc(100% + 0.4em) 0.78em !important;
+  background-position:
+    -0.2em 0.58em,
+    -0.28em 0.42em,
+    -0.18em 0.52em !important;
+  background-repeat: no-repeat !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  padding: 0.05em 0.28em 0.08em !important;
+  margin: 0 -0.16em !important;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  color: inherit !important;
+  font-weight: 550 !important;
+  text-shadow: none;
+  filter: none;
+  text-decoration: none !important;
+}
+
+/* Mentions that are you — pink highlighter strokes */
+.stationery [data-mention-self] {
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      transparent 0,
+      transparent 2px,
+      var(--hl-pink-streak) 2px,
+      var(--hl-pink-streak) 3px
+    ),
+    var(--hl-pink),
+    linear-gradient(
+      101deg,
+      transparent 0%,
+      var(--hl-pink-a) 3%,
+      var(--hl-pink-b) 12%,
+      var(--hl-pink-c) 88%,
+      var(--hl-pink-d) 97%,
+      transparent 100%
+    ) !important;
+}
+
+.stationery a[data-mention-id] {
+  border: none !important;
+  outline: none;
+}
+
+.stationery a[data-mention-id]:hover {
+  background-size:
+    calc(100% + 0.5em) 0.82em,
+    calc(100% + 0.6em) 1.05em,
+    calc(100% + 0.45em) 0.88em !important;
+  background-position:
+    -0.22em 0.52em,
+    -0.3em 0.36em,
+    -0.2em 0.46em !important;
+}
+
+.stationery a[data-mention-self]:hover {
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      transparent 0,
+      transparent 2px,
+      var(--hl-pink-streak) 2px,
+      var(--hl-pink-streak) 3px
+    ),
+    var(--hl-pink),
+    linear-gradient(
+      101deg,
+      transparent 0%,
+      var(--hl-pink-a) 3%,
+      var(--hl-pink-b) 12%,
+      var(--hl-pink-c) 88%,
+      var(--hl-pink-d) 97%,
+      transparent 100%
+    ) !important;
+}
+
+.stationery ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.stationery ::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--manila) 45%, transparent);
+}
+
+.stationery ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--manila-deep) 0%, var(--manila-edge) 100%);
+  border-radius: 2px;
+  border: 2px solid color-mix(in srgb, var(--manila) 45%, transparent);
+}
+
+.stationery ::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--manila-edge) 0%, var(--manila-dark) 100%);
+}
+
+.stationery input:focus,
+.stationery textarea:focus,
+.stationery button:focus-visible {
+  outline: 2px solid var(--message-hover-edge);
+  outline-offset: 2px;
+}
+
+.stationery textarea {
+  background-image: repeating-linear-gradient(
+    transparent,
+    transparent 1.4em,
+    rgba(120, 150, 190, 0.12) 1.4em,
+    rgba(120, 150, 190, 0.12) calc(1.4em + 1px)
+  );
+  background-attachment: local;
+}
+
+
+/* Dark stationery — Catppuccin Mocha */
+.stationery-dark-theme {
+  --stationery-ink: #cdd6f4;
+  --stationery-rule: rgba(137, 180, 250, 0.28);
+  --stationery-margin: rgba(243, 139, 168, 0.5);
+  --stationery-paper: #1e1e2e;
+  --stationery-desk: #11111b;
+  --manila: #313244;
+  --manila-dark: #181825;
+  --manila-deep: #45475a;
+  --manila-edge: #585b70;
+  --manila-border: rgba(108, 112, 134, 0.45);
+  --manila-border-strong: rgba(108, 112, 134, 0.6);
+  --nav-tab: #45475a;
+  --nav-tab-hover: #585b70;
+  --folder-tab-room: #45475a;
+  --paper-inset: rgba(205, 214, 244, 0.06);
+  --paper-shadow: rgba(0, 0, 0, 0.4);
+  --paper-shadow-strong: rgba(0, 0, 0, 0.55);
+  --message-hover: rgba(203, 166, 247, 0.12);
+  --message-hover-edge: rgba(203, 166, 247, 0.55);
+  --media-mat: #313244;
+  /*
+   * Catppuccin Mocha brand stickies — Yellow / Pink / Teal / Blue / Peach / Mauve.
+   * Pastel over surface0 so the hue stays obvious without neon glow.
+   */
+  --postit-1: color-mix(in srgb, #f9e2af 62%, #313244); /* Yellow */
+  --postit-2: color-mix(in srgb, #f5c2e7 58%, #313244); /* Pink */
+  --postit-3: color-mix(in srgb, #94e2d5 58%, #313244); /* Teal */
+  --postit-4: color-mix(in srgb, #89b4fa 58%, #313244); /* Blue */
+  --postit-5: color-mix(in srgb, #fab387 60%, #313244); /* Peach */
+  --postit-6: color-mix(in srgb, #cba6f7 58%, #313244); /* Mauve */
+  --postit-ink: #11111b;
+  /* No white halos — dark crust rims + soft mauve accent */
+  --glow-rim: #11111b;
+  --glow-rim-soft: rgba(17, 17, 27, 0.95);
+  --glow-rim-faint: rgba(30, 30, 46, 0.85);
+  --glow-accent: rgba(203, 166, 247, 0.35);
+  --highlight-inset: rgba(205, 214, 244, 0.07);
+  --highlight-inset-strong: rgba(205, 214, 244, 0.11);
+  --cast-shadow: rgba(0, 0, 0, 0.35);
+  --cast-shadow-mid: rgba(0, 0, 0, 0.45);
+  --cast-shadow-strong: rgba(0, 0, 0, 0.6);
+  --folder-edge: rgba(69, 71, 90, 0.7);
+  --folder-edge-soft: rgba(49, 50, 68, 0.45);
+  --sleeve-paper: rgba(49, 50, 68, 0.92);
+  --sleeve-paper-soft: rgba(49, 50, 68, 0.85);
+  --tape-blend: soft-light;
+  --selected-bright: 1;
+  --peel-wash-strong: rgba(205, 214, 244, 0.22);
+  --peel-wash-mid: rgba(203, 166, 247, 0.12);
+  --peel-wash-soft: rgba(203, 166, 247, 0.04);
+  --hl-selection: rgba(249, 226, 175, 0.35);
+  --code-mark: rgba(249, 226, 175, 0.22);
+  --hl-streak: rgba(249, 226, 175, 0.08);
+  --hl-wash-a: rgba(249, 226, 175, 0.18);
+  --hl-wash-b: rgba(249, 226, 175, 0.32);
+  --hl-wash-c: rgba(249, 226, 175, 0.28);
+  --hl-wash-d: rgba(249, 226, 175, 0.16);
+  --hl-pink-streak: rgba(245, 194, 231, 0.1);
+  --hl-pink-a: rgba(245, 194, 231, 0.18);
+  --hl-pink-b: rgba(245, 194, 231, 0.32);
+  --hl-pink-c: rgba(243, 139, 168, 0.28);
+  --hl-pink-d: rgba(245, 194, 231, 0.16);
+  --tape-fill-a: rgba(249, 226, 175, 0.18);
+  --tape-fill-b: rgba(249, 226, 175, 0.28);
+  --tape-fill-c: rgba(203, 166, 247, 0.2);
+  --tape-base: rgba(203, 166, 247, 0.18);
+  --tape-border: rgba(186, 194, 222, 0.25);
+  --mx-uc-1: #89b4fa;
+  --mx-uc-2: #f5c2e7;
+  --mx-uc-3: #a6e3a1;
+  --mx-uc-4: #f38ba8;
+  --mx-uc-5: #fab387;
+  --mx-uc-6: #94e2d5;
+  --mx-uc-7: #cba6f7;
+  --mx-uc-8: #a6e3a1;
+}
+
+
 *,
 *::before,
 *::after {
@@ -516,7 +1967,9 @@ html.android-capacitor.discord-darker-theme,
 html.android-capacitor.twilight-theme,
 html.android-capacitor.mocha-theme,
 html.android-capacitor.light-theme,
-html.android-capacitor.silver-theme {
+html.android-capacitor.silver-theme,
+html.android-capacitor.stationery-theme,
+html.android-capacitor.stationery-dark-theme {
   --font-secondary: system-ui, Roboto, 'Noto Sans', sans-serif;
 }
 

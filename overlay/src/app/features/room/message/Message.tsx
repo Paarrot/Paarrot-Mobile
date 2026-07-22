@@ -802,8 +802,9 @@ export const Message = as<'div', MessageProps>(
         gap="300"
         direction={messageLayout === MessageLayout.Compact ? 'RowReverse' : 'Row'}
         justifyContent="SpaceBetween"
-        alignItems="Baseline"
+        alignItems="Center"
         grow="Yes"
+        data-message-header=""
       >
         <Box alignItems="Center" gap="200">
           <Username
