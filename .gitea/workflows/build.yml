@@ -102,29 +102,7 @@ jobs:
       
       - name: Build Android APK
         run: npm run android:apk:linux
-      
-      - name: Upload APK
-        uses: actions/upload-artifact@v3
-        with:
-          name: Paarrot-Android.apk
-          path: android/app/build/outputs/apk/debug/Paarrot-*.apk
 
-  create-release:
-    runs-on: ubuntu-latest
-    needs: [increment-version, build-android]
-    if: always() && needs.build-android.result == 'success'
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.ref_name }}
-      
-      - name: Pull latest (after version bump)
-        if: github.ref == 'refs/heads/master'
-        run: git pull origin master
-      
       - name: Get version
         id: version
         run: |
@@ -135,7 +113,14 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
-      
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          find android/app/build/outputs/apk/debug -type f -name "Paarrot-*.apk" -exec cp {} release-files/ \;
+          ls -la release-files/
+          test -n "$(ls -A release-files/*.apk 2>/dev/null)"
+
       - name: Check if tag exists
         id: tag_check
         run: |
@@ -147,7 +132,7 @@ jobs:
             echo "Tag v$VERSION does not exist"
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
-      
+
       - name: Create and push tag
         if: steps.tag_check.outputs.exists == 'false'
         run: |
@@ -155,18 +140,9 @@ jobs:
           git config user.email "actions@github.com"
           git tag -a "v${{ steps.version.outputs.VERSION }}" -m "Release v${{ steps.version.outputs.VERSION }}"
           git push origin "v${{ steps.version.outputs.VERSION }}"
-      
-      - name: Download all artifacts
-        uses: actions/download-artifact@v3
-        with:
-          path: artifacts
-      
-      - name: Prepare release files
-        run: |
-          mkdir -p release-files
-          find artifacts -type f -name "*.apk" -exec cp {} release-files/ \;
-          ls -la release-files/
-      
+
+      # Upload via the internal Gitea API. actions/upload-artifact times out against
+      # git.ruv.wtf:443 from this runner; synbox:8418 is reachable on the LAN.
       - name: Create or Update Gitea Release
         env:
           GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,10 +151,10 @@ jobs:
           TAG_NAME="v${VERSION}"
           API_BASE="http://synbox.ruv.wtf:8418/api/v1"
           REPO="litruv/cinny-mobile"
-          
+
           RELEASE_ID=$(curl -s -H "Authorization: token ${GITEA_TOKEN}" \
             "${API_BASE}/repos/${REPO}/releases/tags/${TAG_NAME}" | jq -r '.id // empty')
-          
+
           if [ -z "$RELEASE_ID" ]; then
             echo "Creating new release for ${TAG_NAME}..."
             RELEASE_ID=$(curl -s -X POST \
@@ -198,7 +174,7 @@ jobs:
                 "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets/${ASSET_ID}"
             done
           fi
-          
+
           echo "Uploading assets..."
           for FILE in release-files/*; do
             FILENAME="Paarrot-${VERSION}.apk"
@@ -210,9 +186,9 @@ jobs:
               "${API_BASE}/repos/${REPO}/releases/${RELEASE_ID}/assets?name=${FILENAME}"
             echo ""
           done
-          
+
           echo "Gitea release complete!"
-      
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GHTOKEN }}
@@ -220,10 +196,10 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           TAG_NAME="v${VERSION}"
           GITHUB_REPO="Paarrot/Paarrot-Mobile"
-          
+
           RELEASE_ID=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${TAG_NAME}" | jq -r '.id // empty')
-          
+
           if [ -z "$RELEASE_ID" ]; then
             echo "Creating new GitHub release for ${TAG_NAME}..."
             RELEASE_ID=$(curl -s -X POST \
@@ -235,11 +211,11 @@ jobs:
           else
             echo "GitHub release exists with ID: ${RELEASE_ID}"
           fi
-          
+
           echo "Uploading assets to GitHub..."
           UPLOAD_URL=$(curl -s -H "Authorization: token ${GH_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}" | jq -r '.upload_url' | sed 's/{?name,label}//')
-          
+
           for FILE in release-files/*; do
             FILENAME="Paarrot-${VERSION}.apk"
             echo "Uploading ${FILENAME} to GitHub..."
@@ -250,5 +226,5 @@ jobs:
               "${UPLOAD_URL}?name=${FILENAME}"
             echo ""
           done
-          
+
           echo "GitHub release complete!"
