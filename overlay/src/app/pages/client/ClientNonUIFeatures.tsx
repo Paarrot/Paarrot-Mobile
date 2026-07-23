@@ -376,6 +376,14 @@ function MessageNotifications() {
         return;
       }
 
+      // Match TitleBar / room bell settings: Default and Mentions rooms only notify on highlights.
+      const notificationType = getNotificationType(mx, room.roomId);
+      const isDm = mDirects.has(room.roomId);
+      const mentionsOnly =
+        notificationType === NotificationType.MentionsAndKeywords ||
+        (notificationType === NotificationType.Default && !isDm);
+      if (mentionsOnly && unreadInfo.highlight === 0) return;
+
       if (
         showNotifications &&
         ((isTauri() && !isElectron()) || isCapacitorNative() || notificationPermission('granted'))
@@ -397,7 +405,6 @@ function MessageNotifications() {
           messageBody = typeof content.body === 'string' ? content.body : undefined;
         }
         
-        const isDm = room.getJoinedMemberCount() === 2 && !room.isSpaceRoom();
         notify({
           roomName: room.name ?? 'Unknown',
           roomAvatar: avatarMxc
@@ -428,6 +435,7 @@ function MessageNotifications() {
     notify,
     selectedRoomId,
     useAuthentication,
+    mDirects,
   ]);
 
   return null;

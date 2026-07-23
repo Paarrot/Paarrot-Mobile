@@ -151,6 +151,21 @@ class MatrixSyncService : Service() {
             }
         }
 
+    private enum class RoomNotifyMode {
+        MUTE,
+        ALL_MESSAGES,
+        MENTIONS_AND_KEYWORDS,
+    }
+
+    private data class NotifyContext(
+        val myUserId: String,
+        val myDisplayName: String?,
+        val myLocalpart: String?,
+        val keywords: List<String>,
+        val directRoomIds: Set<String>,
+        val pushRules: JSONObject?,
+    )
+
     private fun processRoomEvents(sync: JSONObject, myUserId: String) {
         val prefs = applicationContext.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
         val homeserver = prefs.getString(EXTRA_HOMESERVER, null)?.trimEnd('/') ?: return
@@ -159,10 +174,20 @@ class MatrixSyncService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureMessageChannel(nm)
 
+        val notifyCtx = loadNotifyContext(homeserver, token, myUserId)
+
         val roomIds = joinedRooms.keys().asSequence().toList()
         for (roomId in roomIds) {
-            val timeline = joinedRooms.optJSONObject(roomId)
-                ?.optJSONObject("timeline") ?: continue
+            val roomData = joinedRooms.optJSONObject(roomId) ?: continue
+            val mode = resolveRoomNotifyMode(roomId, notifyCtx)
+
+            // Homeserver unread counts already apply push rules — skip rooms with nothing to notify.
+            val unread = roomData.optJSONObject("unread_notifications")
+            val notificationCount = unread?.optInt("notification_count", 0) ?: 0
+            if (mode == RoomNotifyMode.MUTE || notificationCount <= 0) continue
+
+            val mentionsOnly = mode == RoomNotifyMode.MENTIONS_AND_KEYWORDS
+            val timeline = roomData.optJSONObject("timeline") ?: continue
             val events = timeline.optJSONArray("events") ?: continue
 
             for (i in 0 until events.length()) {
@@ -174,6 +199,8 @@ class MatrixSyncService : Service() {
                 if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
 
                 val content = event.optJSONObject("content") ?: continue
+                if (mentionsOnly && !isSpecialMessage(content, notifyCtx)) continue
+
                 val msgtype = content.optString("msgtype")
                 val rawBody = content.optString("body")
                 val body = when (msgtype) {
@@ -200,6 +227,144 @@ class MatrixSyncService : Service() {
 
                 showMessageNotification(nm, profile.displayName, body, profile.avatar, inlineImage)
             }
+        }
+    }
+
+    /** Load push rules, DM list, keywords, and own display name for notification filtering. */
+    private fun loadNotifyContext(homeserver: String, token: String, myUserId: String): NotifyContext {
+        val pushRules = fetchJson("$homeserver/_matrix/client/v3/pushrules/", token)
+        val accountDataDirect = fetchJson("$homeserver/_matrix/client/v3/user/${urlEncode(myUserId)}/account_data/m.direct", token)
+        val profile = fetchJson("$homeserver/_matrix/client/v3/profile/${urlEncode(myUserId)}", token)
+
+        val directRoomIds = mutableSetOf<String>()
+        accountDataDirect?.keys()?.forEach { key ->
+            val rooms = accountDataDirect.optJSONArray(key) ?: return@forEach
+            for (i in 0 until rooms.length()) {
+                rooms.optString(i).takeIf { it.isNotBlank() }?.let { directRoomIds.add(it) }
+            }
+        }
+
+        val keywords = mutableListOf<String>()
+        val contentRules = pushRules?.optJSONObject("global")?.optJSONArray("content")
+        if (contentRules != null) {
+            for (i in 0 until contentRules.length()) {
+                val rule = contentRules.optJSONObject(i) ?: continue
+                if (rule.optBoolean("enabled", true).not()) continue
+                if (!actionsIncludeNotify(rule.optJSONArray("actions"))) continue
+                rule.optString("pattern").takeIf { it.isNotBlank() }?.let { keywords.add(it) }
+            }
+        }
+
+        return NotifyContext(
+            myUserId = myUserId,
+            myDisplayName = profile?.optString("displayname")?.takeIf { it.isNotBlank() },
+            myLocalpart = myUserId.substringAfter("@").substringBefore(":").takeIf { it.isNotBlank() },
+            keywords = keywords,
+            directRoomIds = directRoomIds,
+            pushRules = pushRules,
+        )
+    }
+
+    /**
+     * Mirrors Cinny/Paarrot room notification modes:
+     * Mute override → mute; room notify → all; room dont_notify → mentions;
+     * unset DM → all; unset room → mentions (app Default).
+     */
+    private fun resolveRoomNotifyMode(roomId: String, ctx: NotifyContext): RoomNotifyMode {
+        val global = ctx.pushRules?.optJSONObject("global")
+            // If push rules are unavailable, rely on homeserver unread_notifications only.
+            ?: return RoomNotifyMode.ALL_MESSAGES
+
+        val overrides = global.optJSONArray("override")
+        if (overrides != null) {
+            for (i in 0 until overrides.length()) {
+                val rule = overrides.optJSONObject(i) ?: continue
+                if (rule.optString("rule_id") != roomId) continue
+                if (rule.optBoolean("enabled", true).not()) continue
+                if (!actionsIncludeNotify(rule.optJSONArray("actions"))) {
+                    return RoomNotifyMode.MUTE
+                }
+            }
+        }
+
+        val roomRules = global.optJSONArray("room")
+        if (roomRules != null) {
+            for (i in 0 until roomRules.length()) {
+                val rule = roomRules.optJSONObject(i) ?: continue
+                if (rule.optString("rule_id") != roomId) continue
+                if (rule.optBoolean("enabled", true).not()) continue
+                return if (actionsIncludeNotify(rule.optJSONArray("actions"))) {
+                    RoomNotifyMode.ALL_MESSAGES
+                } else {
+                    RoomNotifyMode.MENTIONS_AND_KEYWORDS
+                }
+            }
+        }
+
+        return if (ctx.directRoomIds.contains(roomId)) {
+            RoomNotifyMode.ALL_MESSAGES
+        } else {
+            RoomNotifyMode.MENTIONS_AND_KEYWORDS
+        }
+    }
+
+    private fun actionsIncludeNotify(actions: org.json.JSONArray?): Boolean {
+        if (actions == null) return false
+        for (i in 0 until actions.length()) {
+            when (val action = actions.opt(i)) {
+                is String -> if (action == "notify") return true
+                is JSONObject -> if (action.has("set_tweak")) { /* tweaks only */ }
+            }
+        }
+        return false
+    }
+
+    private fun isSpecialMessage(content: JSONObject, ctx: NotifyContext): Boolean {
+        val mentions = content.optJSONObject("m.mentions")
+        if (mentions != null) {
+            val userIds = mentions.optJSONArray("user_ids")
+            if (userIds != null) {
+                for (i in 0 until userIds.length()) {
+                    if (userIds.optString(i) == ctx.myUserId) return true
+                }
+            }
+            if (mentions.optBoolean("room", false)) return true
+        }
+
+        val body = content.optString("body").lowercase()
+        if (body.isBlank()) return false
+        if (body.contains("@room")) return true
+        ctx.myDisplayName?.lowercase()?.takeIf { it.isNotBlank() }?.let {
+            if (body.contains(it)) return true
+        }
+        ctx.myLocalpart?.lowercase()?.let {
+            if (body.contains(it)) return true
+        }
+        for (keyword in ctx.keywords) {
+            if (body.contains(keyword.lowercase())) return true
+        }
+        return false
+    }
+
+    private fun urlEncode(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    private fun fetchJson(urlString: String, token: String): JSONObject? {
+        return try {
+            val conn = URL(urlString).openConnection() as HttpURLConnection
+            try {
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("Authorization", "Bearer $token")
+                conn.setRequestProperty("Accept", "application/json")
+                conn.connectTimeout = 4_000
+                conn.readTimeout = 6_000
+                if (conn.responseCode != 200) return null
+                JSONObject(conn.inputStream.bufferedReader().readText())
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch $urlString: ${e.message}")
+            null
         }
     }
 
