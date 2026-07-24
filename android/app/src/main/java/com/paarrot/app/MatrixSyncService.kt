@@ -14,7 +14,14 @@ import android.util.Base64
 import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
+import androidx.core.graphics.drawable.IconCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,7 +76,7 @@ class MatrixSyncService : Service() {
 
         serviceScope.launch {
             try {
-                runSingleSyncFetch(homeserver, token, userId)
+                runSingleSyncFetch(homeserver, token, userId, triggerReason)
                 Log.d(TAG, "One-shot sync completed (reason=$triggerReason)")
             } finally {
                 stopForegroundCompat()
@@ -85,7 +92,12 @@ class MatrixSyncService : Service() {
         job.cancel()
     }
 
-    private suspend fun runSingleSyncFetch(homeserver: String, token: String, userId: String) {
+    private suspend fun runSingleSyncFetch(
+        homeserver: String,
+        token: String,
+        userId: String,
+        triggerReason: String,
+    ) {
         val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val since = prefs.getString(KEY_SINCE, null)
         val isFirstSync = since == null
@@ -102,8 +114,17 @@ class MatrixSyncService : Service() {
                     if (nextBatch != null) {
                         prefs.edit().putString(KEY_SINCE, nextBatch).apply()
 
-                        if (!isFirstSync && !appInForeground) {
+                        // Push wakes should still notify even if the WebView leftover
+                        // "foreground" flag is stale; JS path is suppressed while backgrounded.
+                        val fromPush = triggerReason.startsWith("unifiedpush")
+                        val suppressBecauseUi = appInForeground && !fromPush
+                        if (!isFirstSync && !suppressBecauseUi) {
                             processRoomEvents(json, userId)
+                        } else {
+                            Log.d(
+                                TAG,
+                                "Skipping notifications (firstSync=$isFirstSync, foreground=$appInForeground, reason=$triggerReason)",
+                            )
                         }
                     }
                 }
@@ -127,7 +148,8 @@ class MatrixSyncService : Service() {
     }
 
     private fun buildSyncUrl(base: String, since: String?): String {
-        val filter = """{"room":{"timeline":{"limit":10,"types":["m.room.message"]},"state":{"types":[]},"account_data":{"types":[]},"ephemeral":{"types":[]}},"account_data":{"types":[]},"presence":{"types":[]}}"""
+        // Include encrypted events — most DMs/rooms are E2EE and never emit plaintext m.room.message.
+        val filter = """{"room":{"timeline":{"limit":10,"types":["m.room.message","m.room.encrypted","m.sticker"]},"state":{"types":[]},"account_data":{"types":[]},"ephemeral":{"types":[]}},"account_data":{"types":[]},"presence":{"types":[]}}"""
         val encodedFilter = URLEncoder.encode(filter, "UTF-8")
         val sinceParam = if (since != null) "&since=${URLEncoder.encode(since, "UTF-8")}" else ""
         return "$base/_matrix/client/v3/sync?timeout=12000&filter=$encodedFilter$sinceParam"
@@ -185,41 +207,71 @@ class MatrixSyncService : Service() {
             // Homeserver unread counts already apply push rules — skip rooms with nothing to notify.
             val unread = roomData.optJSONObject("unread_notifications")
             val notificationCount = unread?.optInt("notification_count", 0) ?: 0
+            val highlightCount = unread?.optInt("highlight_count", 0) ?: 0
             if (mode == RoomNotifyMode.MUTE || notificationCount <= 0) continue
 
             val mentionsOnly = mode == RoomNotifyMode.MENTIONS_AND_KEYWORDS
+            if (mentionsOnly && highlightCount <= 0) {
+                // Mentions-only rooms: without a highlight, skip (encrypted bodies can't be scanned).
+                continue
+            }
+
             val timeline = roomData.optJSONObject("timeline") ?: continue
             val events = timeline.optJSONArray("events") ?: continue
 
+            var notifiedForRoom = false
             for (i in 0 until events.length()) {
                 val event = events.optJSONObject(i) ?: continue
                 val eventId = event.optString("event_id")
+                val eventType = event.optString("type")
 
-                if (event.optString("type") != "m.room.message") continue
+                val isMessageLike =
+                    eventType == "m.room.message" ||
+                        eventType == "m.room.encrypted" ||
+                        eventType == "m.sticker"
+                if (!isMessageLike) continue
                 if (event.optString("sender") == myUserId) continue
                 if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
 
-                val content = event.optJSONObject("content") ?: continue
-                if (mentionsOnly && !isSpecialMessage(content, notifyCtx)) continue
+                val content = event.optJSONObject("content") ?: JSONObject()
 
-                val msgtype = content.optString("msgtype")
-                val rawBody = content.optString("body")
-                val body = when (msgtype) {
-                    "m.image"   -> if (rawBody.isNotBlank()) "📷 $rawBody" else "📷 Photo"
-                    "m.video"   -> if (rawBody.isNotBlank()) "🎥 $rawBody" else "🎥 Video"
-                    "m.audio"   -> if (rawBody.isNotBlank()) "🎵 $rawBody" else "🎵 Audio"
-                    "m.file"    -> if (rawBody.isNotBlank()) "📎 $rawBody" else "📎 File"
-                    "m.sticker" -> if (rawBody.isNotBlank()) "🖼️ $rawBody" else "🖼️ Sticker"
-                    else        -> rawBody.takeIf { it.isNotBlank() } ?: continue
+                // Plaintext mention/keyword filter; encrypted events already passed highlight_count.
+                if (
+                    mentionsOnly &&
+                    eventType != "m.room.encrypted" &&
+                    !isSpecialMessage(content, notifyCtx)
+                ) {
+                    continue
                 }
+
+                val body = when {
+                    eventType == "m.room.encrypted" -> "Encrypted message"
+                    eventType == "m.sticker" -> {
+                        val raw = content.optString("body")
+                        if (raw.isNotBlank()) "🖼️ $raw" else "🖼️ Sticker"
+                    }
+                    else -> {
+                        val msgtype = content.optString("msgtype")
+                        val rawBody = content.optString("body")
+                        when (msgtype) {
+                            "m.image"   -> if (rawBody.isNotBlank()) "📷 $rawBody" else "📷 Photo"
+                            "m.video"   -> if (rawBody.isNotBlank()) "🎥 $rawBody" else "🎥 Video"
+                            "m.audio"   -> if (rawBody.isNotBlank()) "🎵 $rawBody" else "🎵 Audio"
+                            "m.file"    -> if (rawBody.isNotBlank()) "📎 $rawBody" else "📎 File"
+                            "m.sticker" -> if (rawBody.isNotBlank()) "🖼️ $rawBody" else "🖼️ Sticker"
+                            else        -> rawBody.takeIf { it.isNotBlank() }
+                        }
+                    }
+                } ?: continue
 
                 val sender = event.optString("sender")
                 val profile = resolveProfile(sender, homeserver, token)
 
-                // For unencrypted image/sticker messages, try to download a preview bitmap.
-                // Encrypted messages have a `file` object instead of a top-level `url`.
+                val msgtype = content.optString("msgtype")
                 val inlineImage: Bitmap? = if (
-                    (msgtype == "m.image" || msgtype == "m.sticker") && !content.has("file")
+                    eventType != "m.room.encrypted" &&
+                    (msgtype == "m.image" || msgtype == "m.sticker" || eventType == "m.sticker") &&
+                    !content.has("file")
                 ) {
                     content.optString("url").takeIf { it.startsWith("mxc://") }?.let { mxc ->
                         mxcToDownloadUrls(mxc, homeserver)
@@ -235,6 +287,21 @@ class MatrixSyncService : Service() {
                     profile.avatar,
                     inlineImage,
                     resolveGroupInfo(roomId, notifyCtx),
+                )
+                notifiedForRoom = true
+            }
+
+            // Fallback: HS says there are notifications but timeline filter missed usable events.
+            if (!notifiedForRoom && notificationCount > 0) {
+                val groupInfo = resolveGroupInfo(roomId, notifyCtx)
+                showMessageNotification(
+                    nm,
+                    roomId,
+                    groupInfo.roomName.ifBlank { "New message" },
+                    if (mentionsOnly) "New mention" else "New message",
+                    null,
+                    null,
+                    groupInfo,
                 )
             }
         }
@@ -540,18 +607,18 @@ class MatrixSyncService : Service() {
         groupInfo: NotificationGroupInfo,
     ) {
         val isDm = groupInfo.kind == "direct"
-        val title = if (isDm) sender else groupInfo.roomName.ifBlank { sender }
-        val text = if (isDm) body else "$sender: $body"
         postMessageNotification(
             this,
             roomId = roomId,
-            title = title,
-            body = text,
+            senderName = sender,
+            messageText = body,
+            conversationTitle = if (isDm) null else groupInfo.roomName.ifBlank { null },
             groupId = groupInfo.groupId,
             groupName = groupInfo.groupName,
             kind = groupInfo.kind,
             largeIcon = largeIcon,
             inlineImage = inlineImage,
+            path = null,
         )
     }
 
@@ -675,37 +742,107 @@ class MatrixSyncService : Service() {
             }
         }
 
+        /** Crop a bitmap into a circle for the notification avatar slot. */
+        fun toCircularBitmap(bitmap: Bitmap): Bitmap {
+            val size = minOf(bitmap.width, bitmap.height)
+            val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(output)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            val radius = size / 2f
+            canvas.drawCircle(radius, radius, radius, paint)
+            paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+            val left = (bitmap.width - size) / 2
+            val top = (bitmap.height - size) / 2
+            canvas.drawBitmap(
+                bitmap,
+                Rect(left, top, left + size, top + size),
+                Rect(0, 0, size, size),
+                paint,
+            )
+            return output
+        }
+
+        /** Soften URLs so Android Assistant doesn't add "Open link in Firefox" actions. */
+        fun sanitizeNotificationText(text: String): String =
+            text.replace(Regex("""https?://\S+""", RegexOption.IGNORE_CASE), "🔗 link")
+
         /**
          * Posts a room notification (+ space/DM group summary) for both background sync
-         * and JS-driven Capacitor notifications (with optional avatar bitmap).
+         * and JS-driven Capacitor notifications.
+         *
+         * Avatar goes in the circular Person / largeIcon slot on the left.
+         * Optional image attachments use BigPictureStyle while keeping that circular avatar.
          */
         fun postMessageNotification(
             context: Context,
             roomId: String,
-            title: String,
-            body: String,
+            senderName: String,
+            messageText: String,
+            conversationTitle: String?,
             groupId: String,
             groupName: String,
             kind: String,
             largeIcon: Bitmap? = null,
             inlineImage: Bitmap? = null,
+            path: String? = null,
+            // Back-compat for older call sites that passed title/body.
+            title: String? = null,
+            body: String? = null,
         ) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             ensureMessageChannels(context)
 
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                ?: Intent(context, MainActivity::class.java)
+            val resolvedSender = senderName.ifBlank { title ?: "Someone" }
+            val resolvedMessage = sanitizeNotificationText(
+                messageText.ifBlank { body ?: "New message" },
+            )
+            val isDm = kind == "direct"
+            val resolvedConversation =
+                conversationTitle?.takeIf { it.isNotBlank() }
+                    ?: title?.takeIf { !isDm && it != resolvedSender }
+
+            val launchIntent = Intent(context, MainActivity::class.java).apply {
+                action = NotificationNavStore.ACTION_OPEN_NOTIFICATION
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                putExtra(EXTRA_ROOM_ID, roomId)
+                if (!path.isNullOrBlank()) {
+                    putExtra(NotificationNavStore.EXTRA_NAV_PATH, path)
+                }
+            }
             val roomNotifId = notificationIdForRoom(roomId)
             val pi = PendingIntent.getActivity(
                 context, roomNotifId, launchIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
 
+            val avatar = largeIcon?.let { toCircularBitmap(it) }
+            val personBuilder = Person.Builder()
+                .setName(resolvedSender)
+                .setKey(resolvedSender)
+            if (avatar != null) {
+                personBuilder.setIcon(IconCompat.createWithBitmap(avatar))
+            }
+            val senderPerson = personBuilder.build()
+
             val channelId = channelIdForKindStatic(kind)
+            val collapsedTitle = if (isDm || resolvedConversation.isNullOrBlank()) {
+                resolvedSender
+            } else {
+                resolvedConversation
+            }
+            val collapsedText = if (isDm || resolvedConversation.isNullOrBlank()) {
+                resolvedMessage
+            } else {
+                "$resolvedSender: $resolvedMessage"
+            }
+
             val builder = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_stat_paarrot)
-                .setContentTitle(title)
-                .setContentText(body)
+                .setContentTitle(collapsedTitle)
+                .setContentText(collapsedText)
                 .setAutoCancel(true)
                 .setContentIntent(pi)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -713,24 +850,42 @@ class MatrixSyncService : Service() {
                 .setGroup(groupId)
                 .setOnlyAlertOnce(true)
                 .setSubText(groupName)
+                .setShortcutId(roomId)
+                // Prevent system "Open link in Chrome/Firefox" contextual actions on URL bodies.
+                .setAllowSystemGeneratedContextualActions(false)
 
             builder.extras.putString(EXTRA_ROOM_ID, roomId)
             builder.extras.putString(EXTRA_GROUP_ID, groupId)
+            if (!path.isNullOrBlank()) {
+                builder.extras.putString(NotificationNavStore.EXTRA_NAV_PATH, path)
+            }
 
-            if (largeIcon != null) builder.setLargeIcon(largeIcon)
+            // Circular avatar on the left (collapsed + MessagingStyle Person).
+            if (avatar != null) builder.setLargeIcon(avatar)
 
             if (inlineImage != null) {
+                // Expanded image attachment — keep avatar in the circular large-icon slot.
                 builder.setStyle(
                     NotificationCompat.BigPictureStyle()
                         .bigPicture(inlineImage)
-                        .bigLargeIcon(null as Bitmap?)
+                        .bigLargeIcon(avatar)
+                        .setBigContentTitle(collapsedTitle)
+                        .setSummaryText(collapsedText)
                 )
             } else {
-                builder.setStyle(
-                    NotificationCompat.BigTextStyle()
-                        .bigText(body)
-                        .setSummaryText(groupName)
-                )
+                val messaging = NotificationCompat.MessagingStyle(senderPerson)
+                    .addMessage(
+                        NotificationCompat.MessagingStyle.Message(
+                            resolvedMessage,
+                            System.currentTimeMillis(),
+                            senderPerson,
+                        )
+                    )
+                if (!resolvedConversation.isNullOrBlank() && !isDm) {
+                    messaging.conversationTitle = resolvedConversation
+                    messaging.isGroupConversation = true
+                }
+                builder.setStyle(messaging)
             }
 
             nm.notify(roomNotifId, builder.build())
@@ -746,6 +901,7 @@ class MatrixSyncService : Service() {
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setGroup(groupId)
                 .setGroupSummary(true)
+                .setAllowSystemGeneratedContextualActions(false)
                 .setStyle(
                     NotificationCompat.InboxStyle()
                         .setBigContentTitle(groupName)

@@ -31,11 +31,42 @@ class SyncServicePlugin : Plugin() {
     override fun load() {
         super.load()
         UnifiedPushManager.setPlugin(this)
+        NotificationNavStore.plugin = this
+        NotificationNavStore.handleIntent(activity?.intent)
+    }
+
+    override fun handleOnNewIntent(intent: Intent?) {
+        super.handleOnNewIntent(intent)
+        if (intent != null) {
+            activity?.intent = intent
+        }
+        NotificationNavStore.handleIntent(intent)
     }
 
     override fun handleOnDestroy() {
         UnifiedPushManager.clearPlugin(this)
+        if (NotificationNavStore.plugin === this) {
+            NotificationNavStore.plugin = null
+        }
         super.handleOnDestroy()
+    }
+
+    /** Emit a notificationOpened event toward the JS layer. */
+    fun emitNotificationOpened(path: String?, roomId: String?) {
+        val payload = JSObject()
+        if (path != null) payload.put("path", path)
+        if (roomId != null) payload.put("roomId", roomId)
+        notifyListeners("notificationOpened", payload, true)
+    }
+
+    /** Returns any pending notification navigation target from a tray tap. */
+    @PluginMethod
+    fun getPendingNotificationNav(call: PluginCall) {
+        val (path, roomId) = NotificationNavStore.consume()
+        val result = JSObject()
+        result.put("path", path)
+        result.put("roomId", roomId)
+        call.resolve(result)
     }
 
     /** Persists Matrix credentials and starts UnifiedPush registration. */
@@ -132,23 +163,33 @@ class SyncServicePlugin : Plugin() {
      */
     @PluginMethod
     fun showNotification(call: PluginCall) {
-        val title = call.getString("title") ?: return call.reject("title required")
-        val body = call.getString("body") ?: return call.reject("body required")
         val roomId = call.getString("roomId") ?: return call.reject("roomId required")
         val groupId = call.getString("groupId") ?: "paarrot_home"
         val groupName = call.getString("groupName") ?: "Home"
         val kind = call.getString("kind") ?: "home"
+        val senderName = call.getString("senderName")
+            ?: call.getString("title")
+            ?: "Someone"
+        val messageText = call.getString("messageText")
+            ?: call.getString("body")
+            ?: "New message"
+        val conversationTitle = call.getString("conversationTitle")
+        val path = call.getString("path")
         val largeIconBase64 = call.getString("largeIconBase64")
+        val bigPictureBase64 = call.getString("bigPictureBase64")
 
         MatrixSyncService.postMessageNotification(
             context = context,
             roomId = roomId,
-            title = title,
-            body = body,
+            senderName = senderName,
+            messageText = messageText,
+            conversationTitle = conversationTitle,
             groupId = groupId,
             groupName = groupName,
             kind = kind,
             largeIcon = MatrixSyncService.decodeBase64Bitmap(largeIconBase64),
+            inlineImage = MatrixSyncService.decodeBase64Bitmap(bigPictureBase64),
+            path = path,
         )
         call.resolve(JSObject().put("shown", true))
     }

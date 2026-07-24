@@ -29,6 +29,8 @@ import {
   getCanonicalAliasOrRoomId,
   encryptFile,
   downloadMedia,
+  downloadEncryptedMedia,
+  decryptFile,
 } from '../../utils/matrix';
 import { mDirectAtom } from '../../state/mDirectList';
 import { roomToParentsAtom } from '../../state/room/roomToParents';
@@ -140,6 +142,15 @@ async function mediaUrlToBase64(
 ): Promise<string | undefined> {
   try {
     const blob = await downloadMedia(url, accessToken);
+    return blobToBase64(blob);
+  } catch (err) {
+    console.warn('[Notifications] Failed to fetch media for notification:', err);
+    return undefined;
+  }
+}
+
+async function blobToBase64(blob: Blob): Promise<string | undefined> {
+  try {
     const buffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(buffer);
     let binary = '';
@@ -149,10 +160,71 @@ async function mediaUrlToBase64(
     }
     const mime = blob.type || 'image/jpeg';
     return `data:${mime};base64,${btoa(binary)}`;
-  } catch (err) {
-    console.warn('[Notifications] Failed to fetch avatar for notification icon:', err);
+  } catch {
     return undefined;
   }
+}
+
+/** Resolve a sender display name from room membership, user directory, then MXID. */
+function resolveSenderDisplayName(mx: MatrixClient, room: { roomId: string }, sender: string): string {
+  return (
+    getMemberDisplayName(room as any, sender) ??
+    mx.getUser(sender)?.displayName ??
+    getMxIdLocalPart(sender) ??
+    sender
+  );
+}
+
+/** Fetch image attachment preview (plaintext or encrypted) for the notification shade. */
+async function fetchNotificationImageBase64(
+  mx: MatrixClient,
+  mEvent: MatrixEvent,
+  useAuthentication: boolean
+): Promise<string | undefined> {
+  const content = (mEvent.getClearContent() ?? mEvent.getContent()) as Record<string, any>;
+  if (content.msgtype !== 'm.image' && mEvent.getType() !== 'm.sticker') return undefined;
+
+  const accessToken = mx.getAccessToken();
+  const info = content.info ?? {};
+
+  try {
+    // Prefer a smaller thumbnail when available.
+    if (info.thumbnail_file?.url) {
+      const mediaUrl =
+        mxcUrlToHttp(mx, info.thumbnail_file.url, useAuthentication) ?? info.thumbnail_file.url;
+      const blob = await downloadEncryptedMedia(
+        mediaUrl,
+        (encBuf) =>
+          decryptFile(encBuf, info.thumbnail_info?.mimetype ?? 'image/jpeg', info.thumbnail_file),
+        accessToken
+      );
+      return blobToBase64(blob);
+    }
+    if (typeof info.thumbnail_url === 'string') {
+      const mediaUrl =
+        mxcUrlToHttp(mx, info.thumbnail_url, useAuthentication, 512, 512, 'scale') ??
+        mxcUrlToHttp(mx, info.thumbnail_url, useAuthentication);
+      if (mediaUrl) return mediaUrlToBase64(mediaUrl, accessToken);
+    }
+    if (content.file?.url) {
+      const mediaUrl = mxcUrlToHttp(mx, content.file.url, useAuthentication) ?? content.file.url;
+      const blob = await downloadEncryptedMedia(
+        mediaUrl,
+        (encBuf) => decryptFile(encBuf, info.mimetype ?? 'image/jpeg', content.file),
+        accessToken
+      );
+      return blobToBase64(blob);
+    }
+    if (typeof content.url === 'string') {
+      const mediaUrl =
+        mxcUrlToHttp(mx, content.url, useAuthentication, 512, 512, 'scale') ??
+        mxcUrlToHttp(mx, content.url, useAuthentication);
+      if (mediaUrl) return mediaUrlToBase64(mediaUrl, accessToken);
+    }
+  } catch (err) {
+    console.warn('[Notifications] Failed to fetch image attachment for notification:', err);
+  }
+  return undefined;
 }
 
 /**
@@ -319,10 +391,37 @@ function MessageNotifications() {
 
   // Set up notification tap listener for mobile
   useEffect(() => {
-    setupNotificationTapListener((path) => {
-      navigate(path);
-    });
-  }, [navigate]);
+    const openFromNotification = (target: string) => {
+      if (!target) return;
+
+      if (target.startsWith('__room__:')) {
+        const roomId = target.slice('__room__:'.length);
+        if (!mx || !roomId) return;
+        try {
+          const roomIdOrAlias = getCanonicalAliasOrRoomId(mx, roomId);
+          if (mDirects.has(roomId)) {
+            navigate(getDirectRoomPath(roomIdOrAlias));
+            return;
+          }
+          const orphanParents = getOrphanParents(roomToParents, roomId);
+          if (orphanParents.length > 0) {
+            const parentSpace = guessPerfectParent(mx, roomId, orphanParents) ?? orphanParents[0];
+            const pSpaceIdOrAlias = getCanonicalAliasOrRoomId(mx, parentSpace);
+            navigate(getSpaceRoomPath(pSpaceIdOrAlias, roomIdOrAlias));
+            return;
+          }
+          navigate(getHomeRoomPath(roomIdOrAlias));
+        } catch (err) {
+          console.error('[Notifications] Navigate from roomId error:', err);
+        }
+        return;
+      }
+
+      navigate(target);
+    };
+
+    setupNotificationTapListener(openFromNotification);
+  }, [navigate, mx, mDirects, roomToParents]);
 
   const roomToUnread = useAtomValue(roomToUnreadAtom);
   const previousUnreadRoomsRef = useRef<Set<string>>(new Set());
@@ -343,6 +442,7 @@ function MessageNotifications() {
       roomName,
       roomAvatar,
       iconBase64,
+      bigPictureBase64,
       username,
       messageBody,
       roomId,
@@ -352,6 +452,7 @@ function MessageNotifications() {
       roomName: string;
       roomAvatar?: string;
       iconBase64?: string;
+      bigPictureBase64?: string;
       username: string;
       messageBody?: string;
       roomId: string;
@@ -394,6 +495,8 @@ function MessageNotifications() {
         : messageBody
           ? `${username}: ${messageBody}`
           : `${username} sent a message`;
+      const messageText = messageBody || 'New message';
+      const conversationTitle = isDm ? undefined : roomName || undefined;
 
       /** Replicates TitleBar click navigation logic */
       const navigateToRoom = () => {
@@ -438,11 +541,15 @@ function MessageNotifications() {
         sendNotification({
           title: notificationTitle,
           body: notificationBody,
+          senderName: username,
+          messageText,
+          conversationTitle,
           path: roomPath,
           roomId,
           group,
           icon: roomAvatar,
           iconBase64,
+          bigPictureBase64,
           onClick: () => {
             if (!window.closed) navigate(roomPath);
           },
@@ -551,10 +658,16 @@ function MessageNotifications() {
             ? mxcUrlToHttp(mx, avatarMxc, useAuthentication, 96, 96, 'crop') ?? undefined
             : undefined;
 
-          let iconBase64: string | undefined;
-          if (roomAvatar && isCapacitorNative()) {
-            iconBase64 = await mediaUrlToBase64(roomAvatar, mx.getAccessToken());
-          }
+          const username = resolveSenderDisplayName(mx, room, sender);
+
+          const [iconBase64, bigPictureBase64] = await Promise.all([
+            roomAvatar && isCapacitorNative()
+              ? mediaUrlToBase64(roomAvatar, mx.getAccessToken())
+              : Promise.resolve(undefined),
+            isCapacitorNative()
+              ? fetchNotificationImageBase64(mx, mEvent, useAuthentication)
+              : Promise.resolve(undefined),
+          ]);
 
           const messageBody = notificationBodyFromEvent(mEvent);
 
@@ -562,7 +675,8 @@ function MessageNotifications() {
             roomName: room.name ?? 'Unknown',
             roomAvatar,
             iconBase64,
-            username: getMemberDisplayName(room, sender) ?? getMxIdLocalPart(sender) ?? sender,
+            bigPictureBase64,
+            username,
             messageBody,
             roomId: room.roomId,
             eventId,

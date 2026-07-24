@@ -207,6 +207,36 @@ export const setupNotificationTapListener = async (onTap: (path: string) => void
     } catch (err) {
       console.warn('Failed to set up Capacitor notification tap listener:', err);
     }
+
+    // Native NotificationManager posts (MatrixBackgroundSync.showNotification) open the
+    // Activity with extras — LocalNotifications never sees those taps.
+    try {
+      const {
+        getPendingNotificationNav,
+        listenForNotificationOpens,
+      } = await import('./backgroundSync');
+
+      const deliver = (path?: string | null, roomId?: string | null) => {
+        if (path && notificationTapCallback) {
+          notificationTapCallback(path);
+          return;
+        }
+        if (roomId && notificationTapCallback) {
+          // Encode a synthetic marker path that ClientNonUIFeatures can resolve.
+          notificationTapCallback(`__room__:${roomId}`);
+        }
+      };
+
+      const pending = await getPendingNotificationNav();
+      deliver(pending.path, pending.roomId);
+
+      await listenForNotificationOpens((event) => {
+        void focusWindow();
+        deliver(event.path, event.roomId);
+      });
+    } catch (err) {
+      console.warn('Failed to set up native notification open listener:', err);
+    }
   }
 };
 
@@ -633,12 +663,29 @@ export const sendNotification = async (options: {
   body: string;
   icon?: string;
   iconBase64?: string;
+  bigPictureBase64?: string;
+  senderName?: string;
+  messageText?: string;
+  conversationTitle?: string;
   path?: string;
   roomId?: string;
   group?: NotificationGroupInfo;
   onClick?: () => void;
 }): Promise<void> => {
-  const { title, body, icon, iconBase64, path, roomId, group, onClick } = options;
+  const {
+    title,
+    body,
+    icon,
+    iconBase64,
+    bigPictureBase64,
+    senderName,
+    messageText,
+    conversationTitle,
+    path,
+    roomId,
+    group,
+    onClick,
+  } = options;
   const extra = {
     ...(path ? { path } : {}),
     ...(roomId ? { roomId } : {}),
@@ -726,11 +773,16 @@ export const sendNotification = async (options: {
         const shown = await showNativeNotification({
           title,
           body,
+          senderName: senderName ?? title,
+          messageText: messageText ?? body,
+          conversationTitle,
+          path,
           roomId,
           groupId,
           groupName,
           kind: group.kind,
           largeIconBase64: iconBase64,
+          bigPictureBase64,
         });
         if (shown) return;
       } catch (err) {

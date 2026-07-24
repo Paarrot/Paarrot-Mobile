@@ -15,6 +15,19 @@ public class MainActivity extends BridgeActivity {
         setupImageKeyboardSupport();
     }
 
+    @Override
+    public void onResume() {
+        super.onResume();
+        // Keep native sync suppression in sync with the real Activity lifecycle.
+        MatrixSyncService.appInForeground = true;
+    }
+
+    @Override
+    public void onPause() {
+        MatrixSyncService.appInForeground = false;
+        super.onPause();
+    }
+
     /** Advertise image MIME types and receive Gboard / paste / drag-drop media. */
     private void setupImageKeyboardSupport() {
         if (bridge == null) return;

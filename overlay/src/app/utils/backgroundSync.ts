@@ -66,14 +66,25 @@ interface MatrixBackgroundSyncPlugin {
   }): Promise<{ success: boolean }>;
   /** Post a message notification with optional avatar (base64) from the JS layer. */
   showNotification(options: {
-    title: string;
-    body: string;
+    title?: string;
+    body?: string;
+    senderName?: string;
+    messageText?: string;
+    conversationTitle?: string;
+    path?: string;
     roomId: string;
     groupId: string;
     groupName: string;
     kind: string;
     largeIconBase64?: string;
+    bigPictureBase64?: string;
   }): Promise<{ shown: boolean }>;
+  /** Pending navigation target from a native notification tap. */
+  getPendingNotificationNav(): Promise<{ path?: string | null; roomId?: string | null }>;
+  addListener(
+    eventName: 'notificationOpened',
+    listenerFunc: (event: { path?: string; roomId?: string }) => void
+  ): Promise<PluginListenerHandle>;
   addListener(
     eventName: 'unifiedPushNewEndpoint',
     listenerFunc: (event: UnifiedPushEndpointEvent) => void
@@ -580,13 +591,18 @@ export const syncNotificationGroupMap = async (
  * Prefer this over Capacitor LocalNotifications on Android.
  */
 export const showNativeNotification = async (options: {
-  title: string;
-  body: string;
+  title?: string;
+  body?: string;
+  senderName?: string;
+  messageText?: string;
+  conversationTitle?: string;
+  path?: string;
   roomId: string;
   groupId: string;
   groupName: string;
   kind: string;
   largeIconBase64?: string;
+  bigPictureBase64?: string;
 }): Promise<boolean> => {
   if (!isBackgroundSyncSupported()) return false;
 
@@ -596,5 +612,32 @@ export const showNativeNotification = async (options: {
   } catch (err) {
     console.warn('[BackgroundSync] showNotification failed:', err);
     return false;
+  }
+};
+
+/** Consume a pending native notification navigation target, if any. */
+export const getPendingNotificationNav = async (): Promise<{
+  path?: string | null;
+  roomId?: string | null;
+}> => {
+  if (!isBackgroundSyncSupported()) return {};
+  try {
+    return await MatrixBackgroundSync.getPendingNotificationNav();
+  } catch (err) {
+    console.warn('[BackgroundSync] getPendingNotificationNav failed:', err);
+    return {};
+  }
+};
+
+/** Subscribe to native notification taps that open the app. */
+export const listenForNotificationOpens = async (
+  listener: (event: { path?: string; roomId?: string }) => void
+): Promise<PluginListenerHandle | undefined> => {
+  if (!isBackgroundSyncSupported()) return undefined;
+  try {
+    return await MatrixBackgroundSync.addListener('notificationOpened', listener);
+  } catch (err) {
+    console.warn('[BackgroundSync] notificationOpened listener failed:', err);
+    return undefined;
   }
 };
