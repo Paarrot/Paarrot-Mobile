@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.util.Base64
 import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -220,9 +221,10 @@ class MatrixSyncService : Service() {
                 val inlineImage: Bitmap? = if (
                     (msgtype == "m.image" || msgtype == "m.sticker") && !content.has("file")
                 ) {
-                    content.optString("url").takeIf { it.startsWith("mxc://") }
-                        ?.let { mxcToDownloadUrl(it, homeserver) }
-                        ?.let { downloadBitmap(it, token) }
+                    content.optString("url").takeIf { it.startsWith("mxc://") }?.let { mxc ->
+                        mxcToDownloadUrls(mxc, homeserver)
+                            .firstNotNullOfOrNull { downloadBitmap(it, token) }
+                    }
                 } else null
 
                 showMessageNotification(
@@ -404,9 +406,7 @@ class MatrixSyncService : Service() {
                 conn.disconnect()
             }
             displayNameCache[mxid] = displayName
-            val avatar = avatarMxc
-                ?.let { mxcToThumbnailUrl(it, homeserver, size = 96) }
-                ?.let { downloadBitmap(it, token) }
+            val avatar = avatarMxc?.let { downloadAvatarBitmap(it, homeserver, token, size = 96) }
             avatarCache[mxid] = avatar
             UserProfile(displayName, avatar)
         } catch (e: Exception) {
@@ -417,23 +417,46 @@ class MatrixSyncService : Service() {
         }
     }
 
-    private fun mxcToThumbnailUrl(mxcUrl: String, homeserver: String, size: Int): String? {
+    private fun mxcToThumbnailUrls(mxcUrl: String, homeserver: String, size: Int): List<String> {
         val withoutScheme = mxcUrl.removePrefix("mxc://")
         val slash = withoutScheme.indexOf('/')
-        if (slash < 0) return null
+        if (slash < 0) return emptyList()
         val serverName = withoutScheme.substring(0, slash)
         val mediaId = withoutScheme.substring(slash + 1)
-        return "$homeserver/_matrix/media/v3/thumbnail/$serverName/$mediaId?width=$size&height=$size&method=crop"
+        val query = "width=$size&height=$size&method=crop"
+        // Prefer MSC3916 authenticated media, fall back to legacy media repo.
+        return listOf(
+            "$homeserver/_matrix/client/v1/media/thumbnail/$serverName/$mediaId?$query",
+            "$homeserver/_matrix/media/v3/thumbnail/$serverName/$mediaId?$query",
+        )
     }
 
-    private fun mxcToDownloadUrl(mxcUrl: String, homeserver: String): String? {
+    private fun mxcToDownloadUrls(mxcUrl: String, homeserver: String): List<String> {
         val withoutScheme = mxcUrl.removePrefix("mxc://")
         val slash = withoutScheme.indexOf('/')
-        if (slash < 0) return null
+        if (slash < 0) return emptyList()
         val serverName = withoutScheme.substring(0, slash)
         val mediaId = withoutScheme.substring(slash + 1)
-        return "$homeserver/_matrix/media/v3/download/$serverName/$mediaId"
+        return listOf(
+            "$homeserver/_matrix/client/v1/media/download/$serverName/$mediaId",
+            "$homeserver/_matrix/media/v3/download/$serverName/$mediaId",
+        )
     }
+
+    private fun downloadAvatarBitmap(
+        mxcUrl: String,
+        homeserver: String,
+        token: String,
+        size: Int,
+    ): Bitmap? {
+        for (url in mxcToThumbnailUrls(mxcUrl, homeserver, size)) {
+            downloadBitmap(url, token)?.let { return it }
+        }
+        return null
+    }
+
+    private fun mxcToDownloadUrl(mxcUrl: String, homeserver: String): String? =
+        mxcToDownloadUrls(mxcUrl, homeserver).firstOrNull()
 
     private fun downloadBitmap(urlString: String, token: String): Bitmap? {
         return try {
@@ -505,11 +528,7 @@ class MatrixSyncService : Service() {
         }
     }
 
-    private fun channelIdForKind(kind: String): String = when (kind) {
-        "direct" -> CHANNEL_DIRECTS
-        "space" -> CHANNEL_SPACES
-        else -> CHANNEL_HOME
-    }
+    private fun channelIdForKind(kind: String): String = channelIdForKindStatic(kind)
 
     private fun showMessageNotification(
         nm: NotificationManager,
@@ -520,72 +539,20 @@ class MatrixSyncService : Service() {
         inlineImage: Bitmap? = null,
         groupInfo: NotificationGroupInfo,
     ) {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-            ?: Intent(this, MainActivity::class.java)
-        val roomNotifId = notificationIdForRoom(roomId)
-        val pi = PendingIntent.getActivity(
-            this, roomNotifId, launchIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
         val isDm = groupInfo.kind == "direct"
         val title = if (isDm) sender else groupInfo.roomName.ifBlank { sender }
         val text = if (isDm) body else "$sender: $body"
-        val channelId = channelIdForKind(groupInfo.kind)
-
-        val builder = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.drawable.ic_stat_paarrot)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setAutoCancel(true)
-            .setContentIntent(pi)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setGroup(groupInfo.groupId)
-            .setOnlyAlertOnce(true)
-            .setSubText(groupInfo.groupName)
-
-        builder.extras.putString(EXTRA_ROOM_ID, roomId)
-        builder.extras.putString(EXTRA_GROUP_ID, groupInfo.groupId)
-
-        if (largeIcon != null) builder.setLargeIcon(largeIcon)
-
-        if (inlineImage != null) {
-            builder.setStyle(
-                NotificationCompat.BigPictureStyle()
-                    .bigPicture(inlineImage)
-                    .bigLargeIcon(null as Bitmap?)
-            )
-        } else {
-            builder.setStyle(
-                NotificationCompat.BigTextStyle()
-                    .bigText(text)
-                    .setSummaryText(groupInfo.groupName)
-            )
-        }
-
-        // Stable per-room id replaces the previous tray entry instead of stacking.
-        nm.notify(roomNotifId, builder.build())
-
-        // Nest under Direct messages / Space name / Home in the notification shade.
-        val summaryId = notificationIdForGroupSummary(groupInfo.groupId)
-        val summary = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.drawable.ic_stat_paarrot)
-            .setContentTitle(groupInfo.groupName)
-            .setContentText("New messages")
-            .setAutoCancel(true)
-            .setContentIntent(pi)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setGroup(groupInfo.groupId)
-            .setGroupSummary(true)
-            .setStyle(
-                NotificationCompat.InboxStyle()
-                    .setBigContentTitle(groupInfo.groupName)
-                    .setSummaryText(groupInfo.groupName)
-            )
-        summary.extras.putString(EXTRA_GROUP_ID, groupInfo.groupId)
-        nm.notify(summaryId, summary.build())
+        postMessageNotification(
+            this,
+            roomId = roomId,
+            title = title,
+            body = text,
+            groupId = groupInfo.groupId,
+            groupName = groupInfo.groupName,
+            kind = groupInfo.kind,
+            largeIcon = largeIcon,
+            inlineImage = inlineImage,
+        )
     }
 
     private fun buildStatusNotification(): Notification {
@@ -620,28 +587,7 @@ class MatrixSyncService : Service() {
     }
 
     private fun ensureMessageChannels(nm: NotificationManager) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-
-        val soundUri = Uri.parse("android.resource://$packageName/${R.raw.paarrot_notification}")
-        val soundAttrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
-
-        val channels = listOf(
-            Triple(CHANNEL_DIRECTS, "Direct messages", "One-to-one Matrix conversations"),
-            Triple(CHANNEL_SPACES, "Spaces", "Messages from rooms inside Spaces"),
-            Triple(CHANNEL_HOME, "Other rooms", "Rooms that are not in a Space"),
-            Triple(CHANNEL_MESSAGES, "Messages", "Legacy message channel"),
-        )
-
-        for ((id, name, description) in channels) {
-            val channel = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
-                this.description = description
-                setSound(soundUri, soundAttrs)
-            }
-            nm.createNotificationChannel(channel)
-        }
+        ensureMessageChannels(this)
     }
 
     companion object {
@@ -685,6 +631,129 @@ class MatrixSyncService : Service() {
 
         fun notificationIdForGroupSummary(groupId: String): Int =
             notificationIdForRoom("summary:$groupId")
+
+        private fun channelIdForKindStatic(kind: String): String = when (kind) {
+            "direct" -> CHANNEL_DIRECTS
+            "space" -> CHANNEL_SPACES
+            else -> CHANNEL_HOME
+        }
+
+        fun ensureMessageChannels(context: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val soundUri = Uri.parse("android.resource://${context.packageName}/${R.raw.paarrot_notification}")
+            val soundAttrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+
+            val channels = listOf(
+                Triple(CHANNEL_DIRECTS, "Direct messages", "One-to-one Matrix conversations"),
+                Triple(CHANNEL_SPACES, "Spaces", "Messages from rooms inside Spaces"),
+                Triple(CHANNEL_HOME, "Other rooms", "Rooms that are not in a Space"),
+                Triple(CHANNEL_MESSAGES, "Messages", "Legacy message channel"),
+            )
+
+            for ((id, name, description) in channels) {
+                val channel = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
+                    this.description = description
+                    setSound(soundUri, soundAttrs)
+                }
+                nm.createNotificationChannel(channel)
+            }
+        }
+
+        fun decodeBase64Bitmap(base64: String?): Bitmap? {
+            if (base64.isNullOrBlank()) return null
+            return try {
+                val raw = if (base64.contains(',')) base64.substringAfter(',') else base64
+                val bytes = Base64.decode(raw, Base64.DEFAULT)
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to decode notification icon: ${e.message}")
+                null
+            }
+        }
+
+        /**
+         * Posts a room notification (+ space/DM group summary) for both background sync
+         * and JS-driven Capacitor notifications (with optional avatar bitmap).
+         */
+        fun postMessageNotification(
+            context: Context,
+            roomId: String,
+            title: String,
+            body: String,
+            groupId: String,
+            groupName: String,
+            kind: String,
+            largeIcon: Bitmap? = null,
+            inlineImage: Bitmap? = null,
+        ) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            ensureMessageChannels(context)
+
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                ?: Intent(context, MainActivity::class.java)
+            val roomNotifId = notificationIdForRoom(roomId)
+            val pi = PendingIntent.getActivity(
+                context, roomNotifId, launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+            val channelId = channelIdForKindStatic(kind)
+            val builder = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(R.drawable.ic_stat_paarrot)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setGroup(groupId)
+                .setOnlyAlertOnce(true)
+                .setSubText(groupName)
+
+            builder.extras.putString(EXTRA_ROOM_ID, roomId)
+            builder.extras.putString(EXTRA_GROUP_ID, groupId)
+
+            if (largeIcon != null) builder.setLargeIcon(largeIcon)
+
+            if (inlineImage != null) {
+                builder.setStyle(
+                    NotificationCompat.BigPictureStyle()
+                        .bigPicture(inlineImage)
+                        .bigLargeIcon(null as Bitmap?)
+                )
+            } else {
+                builder.setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .bigText(body)
+                        .setSummaryText(groupName)
+                )
+            }
+
+            nm.notify(roomNotifId, builder.build())
+
+            val summaryId = notificationIdForGroupSummary(groupId)
+            val summary = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(R.drawable.ic_stat_paarrot)
+                .setContentTitle(groupName)
+                .setContentText("New messages")
+                .setAutoCancel(true)
+                .setContentIntent(pi)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setGroup(groupId)
+                .setGroupSummary(true)
+                .setStyle(
+                    NotificationCompat.InboxStyle()
+                        .setBigContentTitle(groupName)
+                        .setSummaryText(groupName)
+                )
+            summary.extras.putString(EXTRA_GROUP_ID, groupId)
+            nm.notify(summaryId, summary.build())
+        }
 
         /** Cancel the tray notification posted for [roomId], if any. */
         fun clearRoomNotifications(context: Context, roomId: String) {

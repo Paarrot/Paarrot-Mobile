@@ -632,12 +632,13 @@ export const sendNotification = async (options: {
   title: string;
   body: string;
   icon?: string;
+  iconBase64?: string;
   path?: string;
   roomId?: string;
   group?: NotificationGroupInfo;
   onClick?: () => void;
 }): Promise<void> => {
-  const { title, body, icon, path, roomId, group, onClick } = options;
+  const { title, body, icon, iconBase64, path, roomId, group, onClick } = options;
   const extra = {
     ...(path ? { path } : {}),
     ...(roomId ? { roomId } : {}),
@@ -693,6 +694,7 @@ export const sendNotification = async (options: {
           // Use the channel on Android
           channelId: isAndroid() ? channelId : undefined,
           group: groupId,
+          icon,
           // Store path/roomId in extra data for tap handling + clear-on-read
           extra: hasExtra ? extra : undefined,
         });
@@ -716,6 +718,26 @@ export const sendNotification = async (options: {
   }
 
   if (isCapacitorNative()) {
+    // Prefer native NotificationManager so we can set dynamic/authenticated avatars.
+    // Capacitor LocalNotifications only supports drawable resource largeIcon names.
+    if (roomId && groupId && groupName && group) {
+      try {
+        const { showNativeNotification } = await import('./backgroundSync');
+        const shown = await showNativeNotification({
+          title,
+          body,
+          roomId,
+          groupId,
+          groupName,
+          kind: group.kind,
+          largeIconBase64: iconBase64,
+        });
+        if (shown) return;
+      } catch (err) {
+        console.warn('Native showNotification failed, falling back to LocalNotifications:', err);
+      }
+    }
+
     try {
       const { LocalNotifications } = await import('@capacitor/local-notifications');
       let perm = await LocalNotifications.checkPermissions();

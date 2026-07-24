@@ -1,7 +1,7 @@
 import { useAtomValue, useStore } from 'jotai';
 import React, { ReactNode, useCallback, useEffect, useRef, useState, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { RoomEvent, RoomEventHandlerMap } from 'matrix-js-sdk';
+import { RoomEvent, RoomEventHandlerMap, MatrixClient, MatrixEvent, MatrixEventEvent } from 'matrix-js-sdk';
 import { roomToUnreadAtom, unreadEqual, unreadInfoToUnread } from '../../state/room/roomToUnread';
 import LogoSVG from '../../../../public/res/svg/paarrot.svg';
 import LogoUnreadSVG from '../../../../public/res/svg/paarrot-unread.svg';
@@ -15,6 +15,7 @@ import { useMatrixClient } from '../../hooks/useMatrixClient';
 import { getDirectRoomPath, getHomeRoomPath, getSpaceRoomPath, getInboxInvitesPath } from '../pathUtils';
 import {
   getMemberDisplayName,
+  getMemberAvatarMxc,
   getNotificationType,
   getUnreadInfo,
   isNotificationEvent,
@@ -22,7 +23,13 @@ import {
   guessPerfectParent,
 } from '../../utils/room';
 import { NotificationType, UnreadInfo } from '../../../types/matrix/room';
-import { getMxIdLocalPart, mxcUrlToHttp, getCanonicalAliasOrRoomId, encryptFile } from '../../utils/matrix';
+import {
+  getMxIdLocalPart,
+  mxcUrlToHttp,
+  getCanonicalAliasOrRoomId,
+  encryptFile,
+  downloadMedia,
+} from '../../utils/matrix';
 import { mDirectAtom } from '../../state/mDirectList';
 import { roomToParentsAtom } from '../../state/room/roomToParents';
 import { useSelectedRoom } from '../../hooks/router/useSelectedRoom';
@@ -61,6 +68,92 @@ import {
   listenForAndroidShares,
   materializeSharedFile,
 } from '../../utils/androidShare';
+
+/** Wait briefly for an encrypted event to decrypt before reading its body. */
+async function waitForEventDecryption(mx: MatrixClient, mEvent: MatrixEvent) {
+  if (!mEvent.isEncrypted() || mEvent.getClearContent() || mEvent.isDecryptionFailure()) {
+    return;
+  }
+
+  const crypto = mx.getCrypto();
+  if (crypto) {
+    try {
+      await mEvent.attemptDecryption(crypto as any, { isRetry: true });
+    } catch {
+      // Decryption may complete asynchronously via the Decrypted listener below.
+    }
+  }
+
+  if (mEvent.getClearContent() || mEvent.isDecryptionFailure()) return;
+
+  await new Promise<void>((resolve) => {
+    const timeout = window.setTimeout(() => {
+      mEvent.removeListener(MatrixEventEvent.Decrypted, onDecrypted);
+      resolve();
+    }, 2000);
+
+    const onDecrypted = () => {
+      window.clearTimeout(timeout);
+      mEvent.removeListener(MatrixEventEvent.Decrypted, onDecrypted);
+      resolve();
+    };
+
+    mEvent.once(MatrixEventEvent.Decrypted, onDecrypted);
+  });
+}
+
+/** Build a human-readable notification body from (possibly decrypted) event content. */
+function notificationBodyFromEvent(mEvent: MatrixEvent): string | undefined {
+  const content = mEvent.getClearContent() ?? mEvent.getContent();
+  const eventType = mEvent.getType();
+
+  if (eventType === 'm.reaction') {
+    const reactionKey = content['m.relates_to']?.key;
+    return reactionKey ? `reacted with ${reactionKey}` : 'reacted to a message';
+  }
+
+  if (eventType === 'm.room.encrypted' || mEvent.isDecryptionFailure()) {
+    return 'Encrypted message';
+  }
+
+  const rawBody = typeof content.body === 'string' ? content.body : undefined;
+  switch (content.msgtype) {
+    case 'm.image':
+      return rawBody ? `📷 ${rawBody}` : '📷 Photo';
+    case 'm.video':
+      return rawBody ? `🎥 ${rawBody}` : '🎥 Video';
+    case 'm.audio':
+      return rawBody ? `🎵 ${rawBody}` : '🎵 Audio';
+    case 'm.file':
+      return rawBody ? `📎 ${rawBody}` : '📎 File';
+    case 'm.sticker':
+      return rawBody ? `🖼️ ${rawBody}` : '🖼️ Sticker';
+    default:
+      return rawBody;
+  }
+}
+
+/** Download an authenticated media URL to a base64 string for native notification icons. */
+async function mediaUrlToBase64(
+  url: string,
+  accessToken: string | null | undefined
+): Promise<string | undefined> {
+  try {
+    const blob = await downloadMedia(url, accessToken);
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    const mime = blob.type || 'image/jpeg';
+    return `data:${mime};base64,${btoa(binary)}`;
+  } catch (err) {
+    console.warn('[Notifications] Failed to fetch avatar for notification icon:', err);
+    return undefined;
+  }
+}
 
 /**
  * Applies the selected emoji style font to the document.
@@ -249,6 +342,7 @@ function MessageNotifications() {
     ({
       roomName,
       roomAvatar,
+      iconBase64,
       username,
       messageBody,
       roomId,
@@ -257,6 +351,7 @@ function MessageNotifications() {
     }: {
       roomName: string;
       roomAvatar?: string;
+      iconBase64?: string;
       username: string;
       messageBody?: string;
       roomId: string;
@@ -346,6 +441,8 @@ function MessageNotifications() {
           path: roomPath,
           roomId,
           group,
+          icon: roomAvatar,
+          iconBase64,
           onClick: () => {
             if (!window.closed) navigate(roomPath);
           },
@@ -443,34 +540,35 @@ function MessageNotifications() {
         showNotifications &&
         ((isTauri() && !isElectron()) || isCapacitorNative() || notificationPermission('granted'))
       ) {
-        const avatarMxc =
-          room.getAvatarFallbackMember()?.getMxcAvatarUrl() ?? room.getMxcAvatarUrl();
-        const content = mEvent.getContent();
-        
-        let messageBody: string | undefined;
-        if (mEvent.getType() === 'm.reaction') {
-          // For reactions, show "reacted with {emoji}"
-          const reactionKey = content['m.relates_to']?.key;
-          if (reactionKey) {
-            messageBody = `reacted with ${reactionKey}`;
-          } else {
-            messageBody = 'reacted to a message';
-          }
-        } else {
-          messageBody = typeof content.body === 'string' ? content.body : undefined;
-        }
-        
-        notify({
-          roomName: room.name ?? 'Unknown',
-          roomAvatar: avatarMxc
+        void (async () => {
+          await waitForEventDecryption(mx, mEvent);
+
+          const avatarMxc =
+            getMemberAvatarMxc(room, sender) ??
+            room.getAvatarFallbackMember()?.getMxcAvatarUrl() ??
+            room.getMxcAvatarUrl();
+          const roomAvatar = avatarMxc
             ? mxcUrlToHttp(mx, avatarMxc, useAuthentication, 96, 96, 'crop') ?? undefined
-            : undefined,
-          username: getMemberDisplayName(room, sender) ?? getMxIdLocalPart(sender) ?? sender,
-          messageBody,
-          roomId: room.roomId,
-          eventId,
-          isDm,
-        });
+            : undefined;
+
+          let iconBase64: string | undefined;
+          if (roomAvatar && isCapacitorNative()) {
+            iconBase64 = await mediaUrlToBase64(roomAvatar, mx.getAccessToken());
+          }
+
+          const messageBody = notificationBodyFromEvent(mEvent);
+
+          notify({
+            roomName: room.name ?? 'Unknown',
+            roomAvatar,
+            iconBase64,
+            username: getMemberDisplayName(room, sender) ?? getMxIdLocalPart(sender) ?? sender,
+            messageBody,
+            roomId: room.roomId,
+            eventId,
+            isDm,
+          });
+        })();
       }
 
       if (notificationSound) {

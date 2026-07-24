@@ -64,6 +64,16 @@ interface MatrixBackgroundSyncPlugin {
       { groupId: string; groupName: string; roomName: string; kind: string }
     >;
   }): Promise<{ success: boolean }>;
+  /** Post a message notification with optional avatar (base64) from the JS layer. */
+  showNotification(options: {
+    title: string;
+    body: string;
+    roomId: string;
+    groupId: string;
+    groupName: string;
+    kind: string;
+    largeIconBase64?: string;
+  }): Promise<{ shown: boolean }>;
   addListener(
     eventName: 'unifiedPushNewEndpoint',
     listenerFunc: (event: UnifiedPushEndpointEvent) => void
@@ -562,5 +572,29 @@ export const syncNotificationGroupMap = async (
     await MatrixBackgroundSync.setNotificationGroups({ rooms });
   } catch (err) {
     console.warn('[BackgroundSync] setNotificationGroups failed:', err);
+  }
+};
+
+/**
+ * Posts a native tray notification (supports dynamic/authenticated avatar icons).
+ * Prefer this over Capacitor LocalNotifications on Android.
+ */
+export const showNativeNotification = async (options: {
+  title: string;
+  body: string;
+  roomId: string;
+  groupId: string;
+  groupName: string;
+  kind: string;
+  largeIconBase64?: string;
+}): Promise<boolean> => {
+  if (!isBackgroundSyncSupported()) return false;
+
+  try {
+    await MatrixBackgroundSync.showNotification(options);
+    return true;
+  } catch (err) {
+    console.warn('[BackgroundSync] showNotification failed:', err);
+    return false;
   }
 };

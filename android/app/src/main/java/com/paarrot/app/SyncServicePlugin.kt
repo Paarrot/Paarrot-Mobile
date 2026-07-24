@@ -19,6 +19,7 @@ import com.getcapacitor.annotation.CapacitorPlugin
  * - `getStatus()` — returns current fetch and UnifiedPush state
  * - `clearRoomNotifications({ roomId })` — dismiss native tray notifs for a room
  * - `setNotificationGroups({ rooms })` — persist space/DM grouping for tray nesting
+ * - `showNotification({ title, body, roomId, groupId, groupName, kind, largeIconBase64 })`
  */
 @CapacitorPlugin(name = "MatrixBackgroundSync")
 class SyncServicePlugin : Plugin() {
@@ -122,6 +123,34 @@ class SyncServicePlugin : Plugin() {
             .putString(MatrixSyncService.KEY_NOTIFICATION_GROUPS, rooms.toString())
             .apply()
         call.resolve(JSObject().put("success", true))
+    }
+
+    /**
+     * Shows a message notification from the JS layer (supports dynamic avatar icons).
+     * Capacitor LocalNotifications cannot load authenticated/dynamic large icons, so
+     * we post through the same native NotificationManager path as background sync.
+     */
+    @PluginMethod
+    fun showNotification(call: PluginCall) {
+        val title = call.getString("title") ?: return call.reject("title required")
+        val body = call.getString("body") ?: return call.reject("body required")
+        val roomId = call.getString("roomId") ?: return call.reject("roomId required")
+        val groupId = call.getString("groupId") ?: "paarrot_home"
+        val groupName = call.getString("groupName") ?: "Home"
+        val kind = call.getString("kind") ?: "home"
+        val largeIconBase64 = call.getString("largeIconBase64")
+
+        MatrixSyncService.postMessageNotification(
+            context = context,
+            roomId = roomId,
+            title = title,
+            body = body,
+            groupId = groupId,
+            groupName = groupName,
+            kind = kind,
+            largeIcon = MatrixSyncService.decodeBase64Bitmap(largeIconBase64),
+        )
+        call.resolve(JSObject().put("shown", true))
     }
 
     companion object {
