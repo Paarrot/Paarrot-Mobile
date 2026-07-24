@@ -948,7 +948,8 @@ class MatrixSyncService : Service() {
             }
         }
 
-        /** Set by [SyncServicePlugin] — true when the Capacitor WebView UI is visible. */
+        /** Set by [SyncServicePlugin] / [MainActivity] — true when the Capacitor UI is visible. */
+        @JvmField
         @Volatile
         var appInForeground = false
 
