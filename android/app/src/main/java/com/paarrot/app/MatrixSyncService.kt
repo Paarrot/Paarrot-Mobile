@@ -21,6 +21,8 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -118,13 +120,20 @@ class MatrixSyncService : Service() {
                         // "foreground" flag is stale; JS path is suppressed while backgrounded.
                         val fromPush = triggerReason.startsWith("unifiedpush")
                         val suppressBecauseUi = appInForeground && !fromPush
-                        if (!isFirstSync && !suppressBecauseUi) {
-                            processRoomEvents(json, userId)
+                        if (!isFirstSync) {
+                            // Always dismiss trays when another device (or this one) marked rooms read,
+                            // even while the UI is foregrounded and posting is suppressed.
+                            dismissClearedRoomNotifications(json)
+                            if (!suppressBecauseUi) {
+                                processRoomEvents(json, userId)
+                            } else {
+                                Log.d(
+                                    TAG,
+                                    "Skipping notification posts (foreground=$appInForeground, reason=$triggerReason)",
+                                )
+                            }
                         } else {
-                            Log.d(
-                                TAG,
-                                "Skipping notifications (firstSync=$isFirstSync, foreground=$appInForeground, reason=$triggerReason)",
-                            )
+                            Log.d(TAG, "Skipping notifications (firstSync=true, reason=$triggerReason)")
                         }
                     }
                 }
@@ -188,6 +197,24 @@ class MatrixSyncService : Service() {
         val directRoomIds: Set<String>,
         val pushRules: JSONObject?,
     )
+
+    /**
+     * Cancel tray notifications for rooms the homeserver now reports as fully read.
+     * Covers “marked as read on another device” while this phone is backgrounded.
+     * Only acts when [unread_notifications] is present in this sync batch (count changed).
+     */
+    private fun dismissClearedRoomNotifications(sync: JSONObject) {
+        val joinedRooms = sync.optJSONObject("rooms")?.optJSONObject("join") ?: return
+        for (roomId in joinedRooms.keys().asSequence()) {
+            val roomData = joinedRooms.optJSONObject(roomId) ?: continue
+            if (!roomData.has("unread_notifications")) continue
+            val unread = roomData.optJSONObject("unread_notifications")
+            val notificationCount = unread?.optInt("notification_count", 0) ?: 0
+            if (notificationCount <= 0) {
+                clearRoomNotifications(applicationContext, roomId)
+            }
+        }
+    }
 
     private fun processRoomEvents(sync: JSONObject, myUserId: String) {
         val prefs = applicationContext.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
@@ -767,10 +794,47 @@ class MatrixSyncService : Service() {
             text.replace(Regex("""https?://\S+""", RegexOption.IGNORE_CASE), "🔗 link")
 
         /**
+         * Publish a long-lived conversation shortcut so Android 11+ shows the sender
+         * avatar in the collapsed shade (MessagingStyle alone only shows it expanded).
+         */
+        private fun publishConversationShortcut(
+            context: Context,
+            roomId: String,
+            label: String,
+            person: Person,
+            launchIntent: Intent,
+        ): ShortcutInfoCompat {
+            val shortcutIntent = Intent(launchIntent).apply {
+                // Shortcuts require an explicit action.
+                if (action.isNullOrBlank()) {
+                    action = NotificationNavStore.ACTION_OPEN_NOTIFICATION
+                }
+            }
+            val icon = person.icon
+                ?: IconCompat.createWithResource(context, R.drawable.ic_stat_paarrot)
+            val shortcut = ShortcutInfoCompat.Builder(context, "room:$roomId")
+                .setShortLabel(label.take(25).ifBlank { "Chat" })
+                .setLongLabel(label.ifBlank { "Chat" })
+                .setIcon(icon)
+                .setIntent(shortcutIntent)
+                .setPerson(person)
+                .setLongLived(true)
+                .setCategories(setOf("android.shortcut.conversation"))
+                .build()
+            try {
+                ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to publish conversation shortcut: ${e.message}")
+            }
+            return shortcut
+        }
+
+        /**
          * Posts a room notification (+ space/DM group summary) for both background sync
          * and JS-driven Capacitor notifications.
          *
-         * Avatar goes in the circular Person / largeIcon slot on the left.
+         * Avatar goes in the circular largeIcon / conversation-shortcut slot (visible when
+         * collapsed). The small status-bar icon stays the Paarrot mark (Android requirement).
          * Optional image attachments use BigPictureStyle while keeping that circular avatar.
          */
         fun postMessageNotification(
@@ -821,7 +885,8 @@ class MatrixSyncService : Service() {
             val avatar = largeIcon?.let { toCircularBitmap(it) }
             val personBuilder = Person.Builder()
                 .setName(resolvedSender)
-                .setKey(resolvedSender)
+                .setKey("$roomId:$resolvedSender")
+                .setImportant(true)
             if (avatar != null) {
                 personBuilder.setIcon(IconCompat.createWithBitmap(avatar))
             }
@@ -839,6 +904,14 @@ class MatrixSyncService : Service() {
                 "$resolvedSender: $resolvedMessage"
             }
 
+            val shortcut = publishConversationShortcut(
+                context,
+                roomId,
+                collapsedTitle,
+                senderPerson,
+                launchIntent,
+            )
+
             val builder = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_stat_paarrot)
                 .setContentTitle(collapsedTitle)
@@ -850,7 +923,8 @@ class MatrixSyncService : Service() {
                 .setGroup(groupId)
                 .setOnlyAlertOnce(true)
                 .setSubText(groupName)
-                .setShortcutId(roomId)
+                .setShortcutId(shortcut.id)
+                .setShortcutInfo(shortcut)
                 // Prevent system "Open link in Chrome/Firefox" contextual actions on URL bodies.
                 .setAllowSystemGeneratedContextualActions(false)
 
@@ -860,7 +934,7 @@ class MatrixSyncService : Service() {
                 builder.extras.putString(NotificationNavStore.EXTRA_NAV_PATH, path)
             }
 
-            // Circular avatar on the left (collapsed + MessagingStyle Person).
+            // Collapsed shade avatar (large icon). Small icon must stay the monochrome app mark.
             if (avatar != null) builder.setLargeIcon(avatar)
 
             if (inlineImage != null) {
@@ -873,19 +947,14 @@ class MatrixSyncService : Service() {
                         .setSummaryText(collapsedText)
                 )
             } else {
-                val messaging = NotificationCompat.MessagingStyle(senderPerson)
-                    .addMessage(
-                        NotificationCompat.MessagingStyle.Message(
-                            resolvedMessage,
-                            System.currentTimeMillis(),
-                            senderPerson,
-                        )
-                    )
-                if (!resolvedConversation.isNullOrBlank() && !isDm) {
-                    messaging.conversationTitle = resolvedConversation
-                    messaging.isGroupConversation = true
-                }
-                builder.setStyle(messaging)
+                // BigTextStyle keeps setLargeIcon visible when collapsed on most OEMs.
+                // MessagingStyle alone often hides the avatar until the user expands.
+                builder.setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .bigText(collapsedText)
+                        .setBigContentTitle(collapsedTitle)
+                        .setSummaryText(groupName)
+                )
             }
 
             nm.notify(roomNotifId, builder.build())

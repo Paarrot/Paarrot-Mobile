@@ -21,6 +21,18 @@ interface AndroidShareHandlerPlugin {
   getPendingShare(): Promise<{ share: AndroidSharePayload | null }>;
   /** Clears the last pending share payload after it has been consumed. */
   clearPendingShare(): Promise<void>;
+  /** Save a base64 file to gallery / Downloads (MediaStore), or share-sheet fallback. */
+  saveFile(options: {
+    filename: string;
+    mimeType?: string;
+    base64: string;
+  }): Promise<{ saved: boolean; shared?: boolean; uri?: string }>;
+  /** Open the system share sheet for a base64 file. */
+  shareFile(options: {
+    filename: string;
+    mimeType?: string;
+    base64: string;
+  }): Promise<{ shared: boolean }>;
   addListener(
     eventName: 'shareReceived',
     listenerFunc: (payload: AndroidSharePayload) => void

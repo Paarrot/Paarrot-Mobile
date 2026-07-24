@@ -425,16 +425,30 @@ function MessageNotifications() {
 
   const roomToUnread = useAtomValue(roomToUnreadAtom);
   const previousUnreadRoomsRef = useRef<Set<string>>(new Set());
+  const previousUnreadTotalsRef = useRef<Map<string, number>>(new Map());
 
-  // Dismiss OS notifications when a room's unread is cleared (local read or receipt).
+  // Dismiss OS notifications when a room's unread is cleared
+  // (local mark-as-read, or our receipt syncing from another device).
   useEffect(() => {
     const currentRooms = new Set(roomToUnread.keys());
+    const nextTotals = new Map<string, number>();
+
+    roomToUnread.forEach((unread, roomId) => {
+      nextTotals.set(roomId, unread.total);
+      const prevTotal = previousUnreadTotalsRef.current.get(roomId);
+      if (prevTotal !== undefined && prevTotal > 0 && unread.total === 0) {
+        void clearNotificationsForRoom(roomId);
+      }
+    });
+
     for (const roomId of previousUnreadRoomsRef.current) {
       if (!currentRooms.has(roomId)) {
         void clearNotificationsForRoom(roomId);
       }
     }
+
     previousUnreadRoomsRef.current = currentRooms;
+    previousUnreadTotalsRef.current = nextTotals;
   }, [roomToUnread]);
 
   const notify = useCallback(
