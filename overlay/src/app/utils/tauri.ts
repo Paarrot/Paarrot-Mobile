@@ -351,24 +351,7 @@ const ensureNotificationChannel = async (): Promise<void> => {
 };
 
 const ensureCapacitorNotificationChannel = async (): Promise<void> => {
-  if (notificationChannelCreated || !isAndroid()) return;
-
-  try {
-    const { LocalNotifications } = await import('@capacitor/local-notifications');
-    await LocalNotifications.createChannel({
-      id: 'messages',
-      name: 'Messages',
-      description: 'Message notifications from Matrix',
-      importance: 5,
-      sound: 'default',
-      visibility: 1,
-      vibration: true,
-      lights: true,
-    });
-    notificationChannelCreated = true;
-  } catch (err) {
-    console.warn('Failed to create Capacitor notification channel:', err);
-  }
+  await ensureCapacitorNotificationChannels();
 };
 
 /**
@@ -422,6 +405,225 @@ export const getSystemNotificationPermissionState = async (): Promise<Permission
   return 'denied';
 };
 
+/** Foreground sync status notification — must not collide with room message IDs. */
+const ANDROID_STATUS_NOTIFICATION_ID = 1001;
+
+/** Android notification group keys for rooms outside a space. */
+export const NOTIF_GROUP_DIRECTS = 'paarrot_directs';
+export const NOTIF_GROUP_HOME = 'paarrot_home';
+
+/** Capacitor / native channel ids (under the Paarrot app). */
+export const NOTIF_CHANNEL_DIRECTS = 'messages_directs';
+export const NOTIF_CHANNEL_SPACES = 'messages_spaces';
+export const NOTIF_CHANNEL_HOME = 'messages_home';
+/** Legacy channel — kept so older installs still receive. */
+export const NOTIF_CHANNEL_MESSAGES_LEGACY = 'messages';
+
+export type NotificationGroupKind = 'direct' | 'space' | 'home';
+
+export type NotificationGroupInfo = {
+  groupId: string;
+  groupName: string;
+  kind: NotificationGroupKind;
+  roomName?: string;
+};
+
+/**
+ * Stable Android notification id for a Matrix room.
+ * Re-using the same id replaces the previous tray entry instead of stacking.
+ */
+export const notificationIdForRoom = (roomId: string): number => {
+  let hash = 0;
+  for (let i = 0; i < roomId.length; i += 1) {
+    hash = (hash << 5) - hash + roomId.charCodeAt(i);
+    hash |= 0;
+  }
+  let id = Math.abs(hash) % 2147483647;
+  if (id === 0 || id === ANDROID_STATUS_NOTIFICATION_ID) {
+    id = ANDROID_STATUS_NOTIFICATION_ID + 1;
+  }
+  return id;
+};
+
+/** Stable id for a space/group summary notification. */
+export const notificationIdForGroupSummary = (groupId: string): number =>
+  notificationIdForRoom(`summary:${groupId}`);
+
+const channelIdForKind = (kind: NotificationGroupKind): string => {
+  switch (kind) {
+    case 'direct':
+      return NOTIF_CHANNEL_DIRECTS;
+    case 'space':
+      return NOTIF_CHANNEL_SPACES;
+    default:
+      return NOTIF_CHANNEL_HOME;
+  }
+};
+
+const ensureCapacitorNotificationChannels = async (): Promise<void> => {
+  if (!isAndroid()) return;
+
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    const channels: Array<{
+      id: string;
+      name: string;
+      description: string;
+    }> = [
+      {
+        id: NOTIF_CHANNEL_DIRECTS,
+        name: 'Direct messages',
+        description: 'One-to-one Matrix conversations',
+      },
+      {
+        id: NOTIF_CHANNEL_SPACES,
+        name: 'Spaces',
+        description: 'Messages from rooms inside Spaces',
+      },
+      {
+        id: NOTIF_CHANNEL_HOME,
+        name: 'Other rooms',
+        description: 'Rooms that are not in a Space',
+      },
+      {
+        id: NOTIF_CHANNEL_MESSAGES_LEGACY,
+        name: 'Messages',
+        description: 'Legacy message channel',
+      },
+    ];
+
+    await Promise.all(
+      channels.map((channel) =>
+        LocalNotifications.createChannel({
+          id: channel.id,
+          name: channel.name,
+          description: channel.description,
+          importance: 5,
+          sound: 'default',
+          visibility: 1,
+          vibration: true,
+          lights: true,
+        })
+      )
+    );
+    notificationChannelCreated = true;
+  } catch (err) {
+    console.warn('Failed to create Capacitor notification channels:', err);
+  }
+};
+
+const notificationBelongsToRoom = (
+  notification: { id?: number; extra?: Record<string, unknown> },
+  roomId: string
+): boolean => {
+  if (notification.id === notificationIdForRoom(roomId)) return true;
+  const extra = notification.extra;
+  if (!extra || typeof extra !== 'object') return false;
+  if (extra.roomId === roomId) return true;
+  const path = extra.path;
+  if (typeof path === 'string') {
+    return path.includes(encodeURIComponent(roomId)) || path.includes(roomId);
+  }
+  return false;
+};
+
+const clearCapacitorGroupSummaryIfEmpty = async (
+  LocalNotifications: {
+    getDeliveredNotifications: () => Promise<{ notifications: Array<{ id?: number; extra?: Record<string, unknown>; group?: string }> }>;
+    cancel: (opts: { notifications: Array<{ id: number }> }) => Promise<void>;
+    removeDeliveredNotifications: (opts: { notifications: unknown[] }) => Promise<void>;
+  },
+  groupId: string
+): Promise<void> => {
+  const summaryId = notificationIdForGroupSummary(groupId);
+  const delivered = await LocalNotifications.getDeliveredNotifications().catch(() => null);
+  if (!delivered?.notifications) return;
+
+  const siblings = delivered.notifications.filter((n) => {
+    if (n.id === summaryId) return false;
+    if (n.group === groupId) return true;
+    return n.extra?.groupId === groupId;
+  });
+
+  if (siblings.length > 0) return;
+
+  await LocalNotifications.cancel({ notifications: [{ id: summaryId }] }).catch(() => undefined);
+  const summary = delivered.notifications.find((n) => n.id === summaryId);
+  if (summary) {
+    await LocalNotifications.removeDeliveredNotifications({
+      notifications: [summary],
+    }).catch(() => undefined);
+  }
+};
+
+/**
+ * Dismiss system notifications tied to a room (after mark-as-read / receipt).
+ * Clears Capacitor LocalNotifications and native MatrixSyncService tray entries.
+ * Also drops the space/group summary when no child notifications remain.
+ */
+export const clearNotificationsForRoom = async (roomId: string): Promise<void> => {
+  if (!roomId) return;
+
+  if (isCapacitorNative()) {
+    try {
+      const { LocalNotifications } = await import('@capacitor/local-notifications');
+      const id = notificationIdForRoom(roomId);
+
+      const deliveredBefore = await LocalNotifications.getDeliveredNotifications().catch(() => null);
+      const roomNotif = deliveredBefore?.notifications?.find((n: { id?: number; extra?: Record<string, unknown> }) =>
+        notificationBelongsToRoom(n, roomId)
+      );
+      const groupId =
+        (typeof roomNotif?.extra?.groupId === 'string' && roomNotif.extra.groupId) ||
+        (typeof (roomNotif as { group?: string } | undefined)?.group === 'string'
+          ? (roomNotif as { group?: string }).group
+          : undefined);
+
+      await LocalNotifications.cancel({ notifications: [{ id }] }).catch(() => undefined);
+
+      if (deliveredBefore?.notifications?.length) {
+        const matching = deliveredBefore.notifications.filter((n: { id?: number; extra?: Record<string, unknown> }) =>
+          notificationBelongsToRoom(n, roomId)
+        );
+        if (matching.length > 0) {
+          await LocalNotifications.removeDeliveredNotifications({
+            notifications: matching,
+          }).catch(() => undefined);
+        }
+      }
+
+      if (groupId) {
+        await clearCapacitorGroupSummaryIfEmpty(LocalNotifications, groupId);
+      }
+    } catch (err) {
+      console.warn('Failed to clear Capacitor notifications for room:', err);
+    }
+
+    try {
+      const { clearNativeRoomNotifications } = await import('./backgroundSync');
+      await clearNativeRoomNotifications(roomId);
+    } catch (err) {
+      console.warn('Failed to clear native room notifications:', err);
+    }
+    return;
+  }
+
+  if (isTauri() && !isElectron()) {
+    try {
+      const { cancel, removeActive } = await import('@tauri-apps/plugin-notification');
+      const id = notificationIdForRoom(roomId);
+      if (typeof cancel === 'function') {
+        await cancel([id]).catch(() => undefined);
+      }
+      if (typeof removeActive === 'function') {
+        await removeActive([{ id }]).catch(() => undefined);
+      }
+    } catch (err) {
+      console.warn('Failed to clear Tauri notifications for room:', err);
+    }
+  }
+};
+
 /**
  * Send a notification using Tauri's notification plugin
  * Falls back to browser Notification API if not in Tauri
@@ -431,9 +633,20 @@ export const sendNotification = async (options: {
   body: string;
   icon?: string;
   path?: string;
+  roomId?: string;
+  group?: NotificationGroupInfo;
   onClick?: () => void;
 }): Promise<void> => {
-  const { title, body, icon, path, onClick } = options;
+  const { title, body, icon, path, roomId, group, onClick } = options;
+  const extra = {
+    ...(path ? { path } : {}),
+    ...(roomId ? { roomId } : {}),
+    ...(group?.groupId ? { groupId: group.groupId, groupName: group.groupName, groupKind: group.kind } : {}),
+  };
+  const hasExtra = Object.keys(extra).length > 0;
+  const channelId = group ? channelIdForKind(group.kind) : NOTIF_CHANNEL_HOME;
+  const groupId = group?.groupId;
+  const groupName = group?.groupName;
 
   // Use Electron's native notification API if in Electron
   if (isElectron()) {
@@ -475,11 +688,26 @@ export const sendNotification = async (options: {
         await tauriSendNotification({
           title,
           body,
+          // Stable per-room id replaces prior tray entry instead of stacking
+          id: roomId ? notificationIdForRoom(roomId) : undefined,
           // Use the channel on Android
-          channelId: isAndroid() ? 'messages' : undefined,
-          // Store path in extra data for notification tap handling
-          extra: path ? { path } : undefined,
+          channelId: isAndroid() ? channelId : undefined,
+          group: groupId,
+          // Store path/roomId in extra data for tap handling + clear-on-read
+          extra: hasExtra ? extra : undefined,
         });
+
+        if (isAndroid() && groupId && groupName) {
+          await tauriSendNotification({
+            title: groupName,
+            body: 'New messages',
+            id: notificationIdForGroupSummary(groupId),
+            channelId,
+            group: groupId,
+            groupSummary: true,
+            extra: { groupId, groupName, isGroupSummary: true },
+          }).catch(() => undefined);
+        }
       }
       return;
     } catch (err) {
@@ -496,21 +724,53 @@ export const sendNotification = async (options: {
       }
 
       if (perm.display === 'granted') {
-        await ensureCapacitorNotificationChannel();
+        await ensureCapacitorNotificationChannels();
 
-        const id = Math.floor(Date.now() % 2147483647);
+        // One notification per room: same id updates the existing tray entry.
+        const id = roomId
+          ? notificationIdForRoom(roomId)
+          : Math.floor(Date.now() % 2147483647);
+
+        const roomNotification: Record<string, unknown> = {
+          id,
+          title,
+          body,
+          channelId: isAndroid() ? channelId : undefined,
+          smallIcon: isAndroid() ? ANDROID_NOTIFICATION_SMALL_ICON : undefined,
+          iconColor: isAndroid() ? ANDROID_NOTIFICATION_ICON_COLOR : undefined,
+          extra: hasExtra ? extra : undefined,
+          threadIdentifier: groupId,
+        };
+
+        if (isAndroid() && groupId) {
+          roomNotification.group = groupId;
+          if (groupName) {
+            roomNotification.summaryText = groupName;
+          }
+          if (group?.roomName && group.roomName !== title) {
+            roomNotification.largeBody = body;
+          }
+        }
+
+        const notifications: Array<Record<string, unknown>> = [roomNotification];
+
+        // Nest rooms under a space / Directs / Home summary in the shade.
+        if (isAndroid() && groupId && groupName) {
+          notifications.push({
+            id: notificationIdForGroupSummary(groupId),
+            title: groupName,
+            body: 'New messages',
+            channelId,
+            smallIcon: ANDROID_NOTIFICATION_SMALL_ICON,
+            iconColor: ANDROID_NOTIFICATION_ICON_COLOR,
+            group: groupId,
+            groupSummary: true,
+            extra: { groupId, groupName, isGroupSummary: true },
+          });
+        }
+
         await LocalNotifications.schedule({
-          notifications: [
-            {
-              id,
-              title,
-              body,
-              channelId: isAndroid() ? 'messages' : undefined,
-              smallIcon: isAndroid() ? ANDROID_NOTIFICATION_SMALL_ICON : undefined,
-              iconColor: isAndroid() ? ANDROID_NOTIFICATION_ICON_COLOR : undefined,
-              extra: path ? { path } : undefined,
-            },
-          ],
+          notifications: notifications as any,
         });
       }
       return;

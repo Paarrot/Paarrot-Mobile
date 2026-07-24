@@ -35,12 +35,17 @@ import {
   isCapacitorNative,
   sendNotification,
   setupNotificationTapListener,
+  clearNotificationsForRoom,
+  NOTIF_GROUP_DIRECTS,
+  NOTIF_GROUP_HOME,
+  type NotificationGroupInfo,
 } from '../../utils/tauri';
 import { setPaarrotNavigate, initPaarrotAPI } from '../../paarrot-api';
 import {
   startBackgroundSync,
   stopBackgroundSync,
   setAppForegroundState,
+  syncNotificationGroupMap,
 } from '../../utils/backgroundSync';
 import {
   TUploadItem,
@@ -226,6 +231,20 @@ function MessageNotifications() {
     });
   }, [navigate]);
 
+  const roomToUnread = useAtomValue(roomToUnreadAtom);
+  const previousUnreadRoomsRef = useRef<Set<string>>(new Set());
+
+  // Dismiss OS notifications when a room's unread is cleared (local read or receipt).
+  useEffect(() => {
+    const currentRooms = new Set(roomToUnread.keys());
+    for (const roomId of previousUnreadRoomsRef.current) {
+      if (!currentRooms.has(roomId)) {
+        void clearNotificationsForRoom(roomId);
+      }
+    }
+    previousUnreadRoomsRef.current = currentRooms;
+  }, [roomToUnread]);
+
   const notify = useCallback(
     ({
       roomName,
@@ -244,8 +263,42 @@ function MessageNotifications() {
       eventId: string;
       isDm: boolean;
     }) => {
-      const notificationTitle = username;
-      const notificationBody = messageBody || 'New message';
+      let group: NotificationGroupInfo;
+      if (isDm) {
+        group = {
+          groupId: NOTIF_GROUP_DIRECTS,
+          groupName: 'Direct messages',
+          kind: 'direct',
+          roomName,
+        };
+      } else {
+        const orphanParents = getOrphanParents(roomToParents, roomId);
+        if (orphanParents.length > 0 && mx) {
+          const parentSpace = guessPerfectParent(mx, roomId, orphanParents) ?? orphanParents[0];
+          const spaceRoom = mx.getRoom(parentSpace);
+          group = {
+            groupId: parentSpace,
+            groupName: spaceRoom?.name || 'Space',
+            kind: 'space',
+            roomName,
+          };
+        } else {
+          group = {
+            groupId: NOTIF_GROUP_HOME,
+            groupName: 'Home',
+            kind: 'home',
+            roomName,
+          };
+        }
+      }
+
+      // DMs: sender as title. Rooms: room name as title, sender in body.
+      const notificationTitle = isDm ? username : roomName || username;
+      const notificationBody = isDm
+        ? messageBody || 'New message'
+        : messageBody
+          ? `${username}: ${messageBody}`
+          : `${username} sent a message`;
 
       /** Replicates TitleBar click navigation logic */
       const navigateToRoom = () => {
@@ -291,6 +344,8 @@ function MessageNotifications() {
           title: notificationTitle,
           body: notificationBody,
           path: roomPath,
+          roomId,
+          group,
           onClick: () => {
             if (!window.closed) navigate(roomPath);
           },
@@ -449,6 +504,9 @@ function MessageNotifications() {
  */
 function BackgroundSyncSetup() {
   const mx = useMatrixClient();
+  const mDirects = useAtomValue(mDirectAtom);
+  const roomToParents = useAtomValue(roomToParentsAtom);
+
   // Try to make a simple fetch to verify component is rendering
   try {
     fetch('/_matrix/client/v3/sync', { method: 'HEAD' }).catch(() => {});
@@ -467,6 +525,49 @@ function BackgroundSyncSetup() {
       stopBackgroundSync();
     };
   }, [mx]);
+
+  // Keep native background notifier informed of space → room grouping.
+  useEffect(() => {
+    const rooms: Record<
+      string,
+      { groupId: string; groupName: string; roomName: string; kind: 'direct' | 'space' | 'home' }
+    > = {};
+
+    for (const room of mx.getRooms()) {
+      if (room.isSpaceRoom()) continue;
+      const roomId = room.roomId;
+      const roomName = room.name || roomId;
+      if (mDirects.has(roomId)) {
+        rooms[roomId] = {
+          groupId: NOTIF_GROUP_DIRECTS,
+          groupName: 'Direct messages',
+          roomName,
+          kind: 'direct',
+        };
+        continue;
+      }
+      const orphanParents = getOrphanParents(roomToParents, roomId);
+      if (orphanParents.length > 0) {
+        const parentSpace = guessPerfectParent(mx, roomId, orphanParents) ?? orphanParents[0];
+        const spaceRoom = mx.getRoom(parentSpace);
+        rooms[roomId] = {
+          groupId: parentSpace,
+          groupName: spaceRoom?.name || 'Space',
+          roomName,
+          kind: 'space',
+        };
+      } else {
+        rooms[roomId] = {
+          groupId: NOTIF_GROUP_HOME,
+          groupName: 'Home',
+          roomName,
+          kind: 'home',
+        };
+      }
+    }
+
+    void syncNotificationGroupMap(rooms);
+  }, [mx, mDirects, roomToParents]);
 
   return null;
 }

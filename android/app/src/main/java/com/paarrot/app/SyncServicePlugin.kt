@@ -17,6 +17,8 @@ import com.getcapacitor.annotation.CapacitorPlugin
  * - `stop()` — clear persisted credentials and unregister UnifiedPush
  * - `setAppForeground({ foreground })` — tell the service whether the app UI is visible
  * - `getStatus()` — returns current fetch and UnifiedPush state
+ * - `clearRoomNotifications({ roomId })` — dismiss native tray notifs for a room
+ * - `setNotificationGroups({ rooms })` — persist space/DM grouping for tray nesting
  */
 @CapacitorPlugin(name = "MatrixBackgroundSync")
 class SyncServicePlugin : Plugin() {
@@ -95,6 +97,31 @@ class SyncServicePlugin : Plugin() {
             .any { it.service.className == MatrixSyncService::class.java.name }
         val result = UnifiedPushManager.getStatus(context).apply { put("running", running) }
         call.resolve(result)
+    }
+
+    /**
+     * Cancels native tray notifications for a Matrix room after it has been marked as read.
+     */
+    @PluginMethod
+    fun clearRoomNotifications(call: PluginCall) {
+        val roomId = call.getString("roomId")
+            ?: return call.reject("roomId required")
+        MatrixSyncService.clearRoomNotifications(context, roomId)
+        call.resolve(JSObject().put("cleared", true))
+    }
+
+    /**
+     * Persists room → space/group metadata from the JS layer so background
+     * notifications can nest under Direct messages / Space name / Home.
+     */
+    @PluginMethod
+    fun setNotificationGroups(call: PluginCall) {
+        val rooms = call.getObject("rooms")
+            ?: return call.reject("rooms required")
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(MatrixSyncService.KEY_NOTIFICATION_GROUPS, rooms.toString())
+            .apply()
+        call.resolve(JSObject().put("success", true))
     }
 
     companion object {

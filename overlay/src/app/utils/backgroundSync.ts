@@ -10,6 +10,10 @@ type UnifiedPushStatus = {
   distributors: string[] | string;
 };
 
+type ClearRoomNotificationsResult = {
+  cleared: boolean;
+};
+
 type UnifiedPushEndpointEvent = {
   endpoint: string;
   previousEndpoint: string;
@@ -48,6 +52,18 @@ interface MatrixBackgroundSyncPlugin {
   setAppForeground(options: { foreground: boolean }): Promise<void>;
   /** Returns fetch state and current UnifiedPush registration details. */
   getStatus(): Promise<UnifiedPushStatus>;
+  /** Cancel native tray notifications posted for a Matrix room. */
+  clearRoomNotifications(options: { roomId: string }): Promise<ClearRoomNotificationsResult>;
+  /**
+   * Persist room → space/group metadata so background notifications can nest
+   * under Direct messages / Space name / Home.
+   */
+  setNotificationGroups(options: {
+    rooms: Record<
+      string,
+      { groupId: string; groupName: string; roomName: string; kind: string }
+    >;
+  }): Promise<{ success: boolean }>;
   addListener(
     eventName: 'unifiedPushNewEndpoint',
     listenerFunc: (event: UnifiedPushEndpointEvent) => void
@@ -514,5 +530,37 @@ export const getBackgroundSyncStatus = async (): Promise<UnifiedPushStatus | und
   } catch (err) {
     console.warn('[BackgroundSync] getStatus failed:', err);
     return undefined;
+  }
+};
+
+/**
+ * Clears native (MatrixSyncService) tray notifications for a room after it is read.
+ * No-op when background sync / native Android is unavailable.
+ */
+export const clearNativeRoomNotifications = async (roomId: string): Promise<void> => {
+  if (!isBackgroundSyncSupported() || !roomId) return;
+
+  try {
+    await MatrixBackgroundSync.clearRoomNotifications({ roomId });
+  } catch (err) {
+    console.warn('[BackgroundSync] clearRoomNotifications failed:', err);
+  }
+};
+
+/**
+ * Syncs space/DM grouping metadata to the native layer for background notifications.
+ */
+export const syncNotificationGroupMap = async (
+  rooms: Record<
+    string,
+    { groupId: string; groupName: string; roomName: string; kind: string }
+  >
+): Promise<void> => {
+  if (!isBackgroundSyncSupported()) return;
+
+  try {
+    await MatrixBackgroundSync.setNotificationGroups({ rooms });
+  } catch (err) {
+    console.warn('[BackgroundSync] setNotificationGroups failed:', err);
   }
 };

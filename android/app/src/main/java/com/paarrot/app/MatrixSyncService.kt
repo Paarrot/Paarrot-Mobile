@@ -172,7 +172,7 @@ class MatrixSyncService : Service() {
         val token = prefs.getString(EXTRA_TOKEN, null) ?: return
         val joinedRooms = sync.optJSONObject("rooms")?.optJSONObject("join") ?: return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        ensureMessageChannel(nm)
+        ensureMessageChannels(nm)
 
         val notifyCtx = loadNotifyContext(homeserver, token, myUserId)
 
@@ -225,7 +225,15 @@ class MatrixSyncService : Service() {
                         ?.let { downloadBitmap(it, token) }
                 } else null
 
-                showMessageNotification(nm, profile.displayName, body, profile.avatar, inlineImage)
+                showMessageNotification(
+                    nm,
+                    roomId,
+                    profile.displayName,
+                    body,
+                    profile.avatar,
+                    inlineImage,
+                    resolveGroupInfo(roomId, notifyCtx),
+                )
             }
         }
     }
@@ -445,27 +453,100 @@ class MatrixSyncService : Service() {
         }
     }
 
+    private data class NotificationGroupInfo(
+        val groupId: String,
+        val groupName: String,
+        val roomName: String,
+        val kind: String,
+    )
+
+    private fun resolveGroupInfo(roomId: String, ctx: NotifyContext): NotificationGroupInfo {
+        val mapped = loadNotificationGroupMap()[roomId]
+        if (mapped != null) return mapped
+
+        return if (ctx.directRoomIds.contains(roomId)) {
+            NotificationGroupInfo(
+                groupId = GROUP_DIRECTS,
+                groupName = "Direct messages",
+                roomName = roomId,
+                kind = "direct",
+            )
+        } else {
+            NotificationGroupInfo(
+                groupId = GROUP_HOME,
+                groupName = "Home",
+                roomName = roomId,
+                kind = "home",
+            )
+        }
+    }
+
+    private fun loadNotificationGroupMap(): Map<String, NotificationGroupInfo> {
+        val prefs = applicationContext.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_NOTIFICATION_GROUPS, null) ?: return emptyMap()
+        return try {
+            val root = JSONObject(raw)
+            val out = mutableMapOf<String, NotificationGroupInfo>()
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val roomId = keys.next()
+                val obj = root.optJSONObject(roomId) ?: continue
+                out[roomId] = NotificationGroupInfo(
+                    groupId = obj.optString("groupId").ifBlank { GROUP_HOME },
+                    groupName = obj.optString("groupName").ifBlank { "Home" },
+                    roomName = obj.optString("roomName").ifBlank { roomId },
+                    kind = obj.optString("kind").ifBlank { "home" },
+                )
+            }
+            out
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse notification group map: ${e.message}")
+            emptyMap()
+        }
+    }
+
+    private fun channelIdForKind(kind: String): String = when (kind) {
+        "direct" -> CHANNEL_DIRECTS
+        "space" -> CHANNEL_SPACES
+        else -> CHANNEL_HOME
+    }
+
     private fun showMessageNotification(
         nm: NotificationManager,
+        roomId: String,
         sender: String,
         body: String,
         largeIcon: Bitmap? = null,
         inlineImage: Bitmap? = null,
+        groupInfo: NotificationGroupInfo,
     ) {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
             ?: Intent(this, MainActivity::class.java)
+        val roomNotifId = notificationIdForRoom(roomId)
         val pi = PendingIntent.getActivity(
-            this, 0, launchIntent,
+            this, roomNotifId, launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val builder = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+        val isDm = groupInfo.kind == "direct"
+        val title = if (isDm) sender else groupInfo.roomName.ifBlank { sender }
+        val text = if (isDm) body else "$sender: $body"
+        val channelId = channelIdForKind(groupInfo.kind)
+
+        val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_stat_paarrot)
-            .setContentTitle(sender)
-            .setContentText(body)
+            .setContentTitle(title)
+            .setContentText(text)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setGroup(groupInfo.groupId)
+            .setOnlyAlertOnce(true)
+            .setSubText(groupInfo.groupName)
+
+        builder.extras.putString(EXTRA_ROOM_ID, roomId)
+        builder.extras.putString(EXTRA_GROUP_ID, groupInfo.groupId)
 
         if (largeIcon != null) builder.setLargeIcon(largeIcon)
 
@@ -475,9 +556,36 @@ class MatrixSyncService : Service() {
                     .bigPicture(inlineImage)
                     .bigLargeIcon(null as Bitmap?)
             )
+        } else {
+            builder.setStyle(
+                NotificationCompat.BigTextStyle()
+                    .bigText(text)
+                    .setSummaryText(groupInfo.groupName)
+            )
         }
 
-        nm.notify(System.currentTimeMillis().toInt(), builder.build())
+        // Stable per-room id replaces the previous tray entry instead of stacking.
+        nm.notify(roomNotifId, builder.build())
+
+        // Nest under Direct messages / Space name / Home in the notification shade.
+        val summaryId = notificationIdForGroupSummary(groupInfo.groupId)
+        val summary = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(R.drawable.ic_stat_paarrot)
+            .setContentTitle(groupInfo.groupName)
+            .setContentText("New messages")
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setGroup(groupInfo.groupId)
+            .setGroupSummary(true)
+            .setStyle(
+                NotificationCompat.InboxStyle()
+                    .setBigContentTitle(groupInfo.groupName)
+                    .setSummaryText(groupInfo.groupName)
+            )
+        summary.extras.putString(EXTRA_GROUP_ID, groupInfo.groupId)
+        nm.notify(summaryId, summary.build())
     }
 
     private fun buildStatusNotification(): Notification {
@@ -511,21 +619,26 @@ class MatrixSyncService : Service() {
         }
     }
 
-    private fun ensureMessageChannel(nm: NotificationManager) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val soundUri = Uri.parse("android.resource://$packageName/${R.raw.paarrot_notification}")
-            val channel = NotificationChannel(
-                CHANNEL_MESSAGES, "Messages",
-                NotificationManager.IMPORTANCE_HIGH,
-            ).apply {
-                description = "Matrix message notifications"
-                setSound(
-                    soundUri,
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build(),
-                )
+    private fun ensureMessageChannels(nm: NotificationManager) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val soundUri = Uri.parse("android.resource://$packageName/${R.raw.paarrot_notification}")
+        val soundAttrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
+        val channels = listOf(
+            Triple(CHANNEL_DIRECTS, "Direct messages", "One-to-one Matrix conversations"),
+            Triple(CHANNEL_SPACES, "Spaces", "Messages from rooms inside Spaces"),
+            Triple(CHANNEL_HOME, "Other rooms", "Rooms that are not in a Space"),
+            Triple(CHANNEL_MESSAGES, "Messages", "Legacy message channel"),
+        )
+
+        for ((id, name, description) in channels) {
+            val channel = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
+                this.description = description
+                setSound(soundUri, soundAttrs)
             }
             nm.createNotificationChannel(channel)
         }
@@ -537,15 +650,78 @@ class MatrixSyncService : Service() {
         const val EXTRA_TOKEN = "access_token"
         const val EXTRA_USER_ID = "user_id"
         const val EXTRA_DEVICE_ID = "device_id"
+        const val EXTRA_ROOM_ID = "room_id"
+        const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_TRIGGER_REASON = "trigger_reason"
+        const val KEY_NOTIFICATION_GROUPS = "notification_groups"
         const val PREFS = "matrix_sync_prefs"
         const val KEY_SINCE = "since_token"
         private const val KEY_LAST_WAKE_MS = "last_wake_ms"
         private const val NOTIF_ID_STATUS = 1001
         private const val CHANNEL_STATUS = "sync_status"
         private const val CHANNEL_MESSAGES = "messages_paarrot"
+        private const val CHANNEL_DIRECTS = "messages_directs"
+        private const val CHANNEL_SPACES = "messages_spaces"
+        private const val CHANNEL_HOME = "messages_home"
+        private const val GROUP_DIRECTS = "paarrot_directs"
+        private const val GROUP_HOME = "paarrot_home"
         private const val MIN_WAKE_INTERVAL_MS = 7_500L
         const val MODE_ONE_SHOT = "one_shot"
+
+        /** Same hashing scheme as JS `notificationIdForRoom` so clear-on-read hits both paths. */
+        fun notificationIdForRoom(roomId: String): Int {
+            var hash = 0
+            for (ch in roomId) {
+                hash = (hash shl 5) - hash + ch.code
+            }
+            // Match JS Math.abs(...); avoid Int.MIN_VALUE abs edge case.
+            val positive = if (hash == Int.MIN_VALUE) 0 else kotlin.math.abs(hash)
+            var id = positive % 2147483647
+            if (id == 0 || id == NOTIF_ID_STATUS) {
+                id = NOTIF_ID_STATUS + 1
+            }
+            return id
+        }
+
+        fun notificationIdForGroupSummary(groupId: String): Int =
+            notificationIdForRoom("summary:$groupId")
+
+        /** Cancel the tray notification posted for [roomId], if any. */
+        fun clearRoomNotifications(context: Context, roomId: String) {
+            if (roomId.isBlank()) return
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val roomNotifId = notificationIdForRoom(roomId)
+
+            var groupId: String? = null
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                groupId = nm.activeNotifications
+                    .firstOrNull { it.id == roomNotifId }
+                    ?.notification?.extras?.getString(EXTRA_GROUP_ID)
+            }
+
+            nm.cancel(roomNotifId)
+
+            // Also drop any legacy stacked notifications that still carry this room id.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                for (active in nm.activeNotifications) {
+                    val tagged = active.notification.extras.getString(EXTRA_ROOM_ID)
+                    if (tagged == roomId && active.id != roomNotifId) {
+                        nm.cancel(active.id)
+                    }
+                }
+
+                if (!groupId.isNullOrBlank()) {
+                    val summaryId = notificationIdForGroupSummary(groupId)
+                    val siblingsRemain = nm.activeNotifications.any { active ->
+                        active.id != summaryId &&
+                            active.notification.extras.getString(EXTRA_GROUP_ID) == groupId
+                    }
+                    if (!siblingsRemain) {
+                        nm.cancel(summaryId)
+                    }
+                }
+            }
+        }
 
         /** Set by [SyncServicePlugin] — true when the Capacitor WebView UI is visible. */
         @Volatile
