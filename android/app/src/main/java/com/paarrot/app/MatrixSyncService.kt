@@ -31,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -706,6 +707,8 @@ class MatrixSyncService : Service() {
         private const val GROUP_DIRECTS = "paarrot_directs"
         private const val GROUP_HOME = "paarrot_home"
         private const val MIN_WAKE_INTERVAL_MS = 7_500L
+        private const val MAX_MESSAGING_HISTORY = 8
+        private const val KEY_MSG_HISTORY_PREFIX = "notif_hist_"
         const val MODE_ONE_SHOT = "one_shot"
 
         /** Same hashing scheme as JS `notificationIdForRoom` so clear-on-read hits both paths. */
@@ -829,13 +832,85 @@ class MatrixSyncService : Service() {
             return shortcut
         }
 
+        private data class PendingNotifMessage(
+            val sender: String,
+            val text: String,
+            val timestamp: Long,
+        )
+
+        private fun historyPrefsKey(roomId: String) = KEY_MSG_HISTORY_PREFIX + roomId
+
+        private fun loadMessageHistory(context: Context, roomId: String): List<PendingNotifMessage> {
+            val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(historyPrefsKey(roomId), null)
+                ?: return emptyList()
+            return try {
+                val arr = JSONArray(raw)
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val sender = obj.optString("sender")
+                        val text = obj.optString("text")
+                        val ts = obj.optLong("ts", 0L)
+                        if (sender.isBlank() || text.isBlank()) continue
+                        add(PendingNotifMessage(sender, text, ts))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load notification history for $roomId: ${e.message}")
+                emptyList()
+            }
+        }
+
+        private fun saveMessageHistory(
+            context: Context,
+            roomId: String,
+            messages: List<PendingNotifMessage>,
+        ) {
+            val arr = JSONArray()
+            for (msg in messages) {
+                arr.put(
+                    JSONObject()
+                        .put("sender", msg.sender)
+                        .put("text", msg.text)
+                        .put("ts", msg.timestamp)
+                )
+            }
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(historyPrefsKey(roomId), arr.toString())
+                .apply()
+        }
+
+        private fun clearMessageHistory(context: Context, roomId: String) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .remove(historyPrefsKey(roomId))
+                .apply()
+        }
+
+        private fun appendMessageHistory(
+            context: Context,
+            roomId: String,
+            sender: String,
+            text: String,
+        ): List<PendingNotifMessage> {
+            val next = (loadMessageHistory(context, roomId) + PendingNotifMessage(
+                sender = sender,
+                text = text,
+                timestamp = System.currentTimeMillis(),
+            )).takeLast(MAX_MESSAGING_HISTORY)
+            saveMessageHistory(context, roomId, next)
+            return next
+        }
+
         /**
          * Posts a room notification (+ space/DM group summary) for both background sync
          * and JS-driven Capacitor notifications.
          *
-         * Avatar goes in the circular largeIcon / conversation-shortcut slot (visible when
-         * collapsed). The small status-bar icon stays the Paarrot mark (Android requirement).
-         * Optional image attachments use BigPictureStyle while keeping that circular avatar.
+         * Uses MessagingStyle with persisted per-room history so rapid messages accumulate
+         * instead of each update wiping the previous body (stable per-room notification id).
+         * Avatar goes in largeIcon + conversation shortcut (visible when collapsed).
          */
         fun postMessageNotification(
             context: Context,
@@ -892,6 +967,8 @@ class MatrixSyncService : Service() {
             }
             val senderPerson = personBuilder.build()
 
+            val history = appendMessageHistory(context, roomId, resolvedSender, resolvedMessage)
+
             val channelId = channelIdForKindStatic(kind)
             val collapsedTitle = if (isDm || resolvedConversation.isNullOrBlank()) {
                 resolvedSender
@@ -912,6 +989,34 @@ class MatrixSyncService : Service() {
                 launchIntent,
             )
 
+            val selfPerson = Person.Builder()
+                .setName("Me")
+                .setKey("self")
+                .build()
+            val messagingStyle = NotificationCompat.MessagingStyle(selfPerson)
+                .setGroupConversation(!isDm)
+            if (!isDm && !resolvedConversation.isNullOrBlank()) {
+                messagingStyle.conversationTitle = resolvedConversation
+            }
+            for (msg in history) {
+                val person = if (msg.sender == resolvedSender) {
+                    senderPerson
+                } else {
+                    Person.Builder()
+                        .setName(msg.sender)
+                        .setKey("$roomId:${msg.sender}")
+                        .setImportant(true)
+                        .build()
+                }
+                messagingStyle.addMessage(
+                    NotificationCompat.MessagingStyle.Message(
+                        msg.text,
+                        msg.timestamp,
+                        person,
+                    )
+                )
+            }
+
             val builder = NotificationCompat.Builder(context, channelId)
                 .setSmallIcon(R.drawable.ic_stat_paarrot)
                 .setContentTitle(collapsedTitle)
@@ -922,11 +1027,13 @@ class MatrixSyncService : Service() {
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setGroup(groupId)
                 .setOnlyAlertOnce(true)
+                .setNumber(history.size)
                 .setSubText(groupName)
                 .setShortcutId(shortcut.id)
                 .setShortcutInfo(shortcut)
                 // Prevent system "Open link in Chrome/Firefox" contextual actions on URL bodies.
                 .setAllowSystemGeneratedContextualActions(false)
+                .setStyle(messagingStyle)
 
             builder.extras.putString(EXTRA_ROOM_ID, roomId)
             builder.extras.putString(EXTRA_GROUP_ID, groupId)
@@ -937,23 +1044,14 @@ class MatrixSyncService : Service() {
             // Collapsed shade avatar (large icon). Small icon must stay the monochrome app mark.
             if (avatar != null) builder.setLargeIcon(avatar)
 
-            if (inlineImage != null) {
-                // Expanded image attachment — keep avatar in the circular large-icon slot.
+            // Image attachments: keep MessagingStyle history; BigPicture would wipe prior lines.
+            if (inlineImage != null && history.size == 1) {
                 builder.setStyle(
                     NotificationCompat.BigPictureStyle()
                         .bigPicture(inlineImage)
                         .bigLargeIcon(avatar)
                         .setBigContentTitle(collapsedTitle)
                         .setSummaryText(collapsedText)
-                )
-            } else {
-                // BigTextStyle keeps setLargeIcon visible when collapsed on most OEMs.
-                // MessagingStyle alone often hides the avatar until the user expands.
-                builder.setStyle(
-                    NotificationCompat.BigTextStyle()
-                        .bigText(collapsedText)
-                        .setBigContentTitle(collapsedTitle)
-                        .setSummaryText(groupName)
                 )
             }
 
@@ -983,6 +1081,7 @@ class MatrixSyncService : Service() {
         /** Cancel the tray notification posted for [roomId], if any. */
         fun clearRoomNotifications(context: Context, roomId: String) {
             if (roomId.isBlank()) return
+            clearMessageHistory(context, roomId)
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val roomNotifId = notificationIdForRoom(roomId)
 
