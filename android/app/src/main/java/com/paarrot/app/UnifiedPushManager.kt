@@ -4,9 +4,12 @@ import android.app.Activity
 import android.content.Context
 import android.util.Log
 import com.getcapacitor.JSObject
+import org.json.JSONObject
 import org.unifiedpush.android.connector.FailedReason
 import org.unifiedpush.android.connector.INSTANCE_DEFAULT
 import org.unifiedpush.android.connector.UnifiedPush
+import java.net.HttpURLConnection
+import java.net.URL
 
 /** Coordinates UnifiedPush registration state and bridges events back to JS. */
 object UnifiedPushManager {
@@ -18,6 +21,7 @@ object UnifiedPushManager {
     private const val EVENT_UNREGISTERED = "unifiedPushUnregistered"
     private const val EVENT_REGISTRATION_FAILED = "unifiedPushRegistrationFailed"
     private const val DEFAULT_MESSAGE = "Paarrot notifications"
+    const val DEFAULT_MATRIX_GATEWAY = "https://matrix.gateway.unifiedpush.org/_matrix/push/v1/notify"
 
     @Volatile
     private var plugin: SyncServicePlugin? = null
@@ -50,6 +54,60 @@ object UnifiedPushManager {
             } else {
                 dispatchRegistrationFailed(FailedReason.ACTION_REQUIRED.name, INSTANCE_DEFAULT)
             }
+        }
+    }
+
+    /**
+     * Clears any saved distributor and re-opens the OS/default distributor picker
+     * (`unifiedpush://link`), then registers again on success.
+     */
+    fun requestDistributorSetup(context: Context, activity: Activity, onDone: (Boolean) -> Unit) {
+        runCatching { UnifiedPush.removeDistributor(context) }
+            .onFailure { Log.w(TAG, "removeDistributor failed: ${it.message}") }
+        clearEndpoint(context)
+
+        UnifiedPush.tryUseDefaultDistributor(activity) { success ->
+            if (success) {
+                requestRegistration(context)
+            } else {
+                dispatchRegistrationFailed(FailedReason.ACTION_REQUIRED.name, INSTANCE_DEFAULT)
+            }
+            onDone(success)
+        }
+    }
+
+    /**
+     * Discovers the Matrix push gateway for a UnifiedPush endpoint via native HTTP
+     * (WebView `fetch` fails — ntfy responses omit CORS headers).
+     */
+    fun resolveMatrixGateway(endpoint: String): String {
+        return try {
+            val endpointUrl = URL(endpoint)
+            val discoveryUrl = URL(
+                endpointUrl.protocol,
+                endpointUrl.host,
+                endpointUrl.port,
+                "/_matrix/push/v1/notify",
+            )
+            val conn = discoveryUrl.openConnection() as HttpURLConnection
+            try {
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 4_000
+                conn.readTimeout = 6_000
+                conn.setRequestProperty("Accept", "application/json")
+                if (conn.responseCode != 200) return DEFAULT_MATRIX_GATEWAY
+
+                val body = JSONObject(conn.inputStream.bufferedReader().readText())
+                val gateway =
+                    body.optString("gateway").takeIf { it.isNotBlank() }
+                        ?: body.optJSONObject("unifiedpush")?.optString("gateway")
+                if (gateway == "matrix") discoveryUrl.toString() else DEFAULT_MATRIX_GATEWAY
+            } finally {
+                conn.disconnect()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Matrix gateway discovery failed: ${e.message}")
+            DEFAULT_MATRIX_GATEWAY
         }
     }
 

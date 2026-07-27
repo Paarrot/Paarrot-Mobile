@@ -52,6 +52,8 @@ interface MatrixBackgroundSyncPlugin {
   setAppForeground(options: { foreground: boolean }): Promise<void>;
   /** Returns fetch state and current UnifiedPush registration details. */
   getStatus(): Promise<UnifiedPushStatus>;
+  /** Native Matrix gateway discovery for a UnifiedPush endpoint (avoids WebView CORS). */
+  resolveUnifiedPushGateway(options: { endpoint: string }): Promise<{ gatewayUrl: string }>;
   /** Cancel native tray notifications posted for a Matrix room. */
   clearRoomNotifications(options: { roomId: string }): Promise<ClearRoomNotificationsResult>;
   /**
@@ -170,6 +172,15 @@ const normalizeDistributors = (raw: UnifiedPushStatus['distributors']): string[]
 };
 
 const resolveUnifiedPushGateway = async (endpoint: string): Promise<string> => {
+  // Prefer native HTTP — ntfy/Matrix gateway responses omit CORS headers, so
+  // WebView fetch fails with TypeError: Failed to fetch and wrongly falls back.
+  try {
+    const result = await MatrixBackgroundSync.resolveUnifiedPushGateway({ endpoint });
+    if (result?.gatewayUrl) return result.gatewayUrl;
+  } catch (err) {
+    console.warn('[BackgroundSync] Native UnifiedPush gateway discovery failed:', err);
+  }
+
   try {
     const discoveryUrl = new URL(endpoint);
     discoveryUrl.pathname = '/_matrix/push/v1/notify';

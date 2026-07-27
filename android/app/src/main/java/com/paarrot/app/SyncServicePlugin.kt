@@ -17,6 +17,8 @@ import com.getcapacitor.annotation.CapacitorPlugin
  * - `stop()` — clear persisted credentials and unregister UnifiedPush
  * - `setAppForeground({ foreground })` — tell the service whether the app UI is visible
  * - `getStatus()` — returns current fetch and UnifiedPush state
+ * - `requestDistributorSetup()` — clear saved distributor and re-open OS picker
+ * - `resolveUnifiedPushGateway({ endpoint })` — native Matrix gateway discovery
  * - `clearRoomNotifications({ roomId })` — dismiss native tray notifs for a room
  * - `setNotificationGroups({ rooms })` — persist space/DM grouping for tray nesting
  * - `showNotification({ title, body, roomId, groupId, groupName, kind, largeIconBase64 })`
@@ -129,6 +131,35 @@ class SyncServicePlugin : Plugin() {
             .any { it.service.className == MatrixSyncService::class.java.name }
         val result = UnifiedPushManager.getStatus(context).apply { put("running", running) }
         call.resolve(result)
+    }
+
+    /**
+     * Clears the saved UnifiedPush distributor and opens the OS default-distributor
+     * picker (`unifiedpush://link`), then re-registers on success.
+     */
+    @PluginMethod
+    fun requestDistributorSetup(call: PluginCall) {
+        val currentActivity = activity
+            ?: return call.reject("Activity required to select a UnifiedPush distributor")
+        UnifiedPushManager.requestDistributorSetup(context, currentActivity) { success ->
+            call.resolve(JSObject().put("success", success))
+        }
+    }
+
+    /**
+     * Resolves the Matrix push gateway for a UnifiedPush endpoint using native HTTP
+     * so discovery is not blocked by missing CORS headers in the WebView.
+     */
+    @PluginMethod
+    fun resolveUnifiedPushGateway(call: PluginCall) {
+        val endpoint = call.getString("endpoint")
+            ?: return call.reject("endpoint required")
+        Thread {
+            val gateway = UnifiedPushManager.resolveMatrixGateway(endpoint)
+            bridge?.executeOnMainThread {
+                call.resolve(JSObject().put("gatewayUrl", gateway))
+            }
+        }.start()
     }
 
     /**
