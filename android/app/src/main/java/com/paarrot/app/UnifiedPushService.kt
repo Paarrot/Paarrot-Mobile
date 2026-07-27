@@ -21,7 +21,7 @@ class UnifiedPushService : PushService() {
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) {
         Log.w(TAG, "UnifiedPush registration failed: $reason")
-        UnifiedPushManager.onRegistrationFailed(reason.name, instance)
+        UnifiedPushManager.onRegistrationFailed(applicationContext, reason.name, instance)
     }
 
     override fun onUnregistered(instance: String) {

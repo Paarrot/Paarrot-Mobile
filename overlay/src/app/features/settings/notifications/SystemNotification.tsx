@@ -171,6 +171,7 @@ type PushStatus = {
   distributor: string;
   endpoint: string;
   distributors: string[];
+  lastFailure: string;
 };
 
 /** Android-only section showing UnifiedPush registration status and controls. */
@@ -194,6 +195,7 @@ function AndroidPushNotifications() {
             distributor: s.distributor || '',
             endpoint: s.endpoint || '',
             distributors,
+            lastFailure: s.lastFailure || '',
           }
         : undefined
     );
@@ -211,7 +213,7 @@ function AndroidPushNotifications() {
       await refresh();
       if (!result.success) {
         setLastError(
-          'Could not register a push distributor. Install ntfy (with UnifiedPush enabled), then try Reset again.'
+          'Selected distributor but did not get a push endpoint. In ntfy: enable UnifiedPush, allow unrestricted battery, then try Reset again.'
         );
       }
     }, [refresh])
@@ -241,6 +243,13 @@ function AndroidPushNotifications() {
       return (
         <Text as="span" size="T200">
           {`Distributor: ${status.distributor || 'unknown'}`}
+        </Text>
+      );
+    }
+    if (status.lastFailure) {
+      return (
+        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+          {`Registration failed (${status.lastFailure}). Tap Reset and pick ntfy again.`}
         </Text>
       );
     }

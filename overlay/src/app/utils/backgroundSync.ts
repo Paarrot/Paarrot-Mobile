@@ -8,6 +8,7 @@ type UnifiedPushStatus = {
   registered: boolean;
   distributor: string;
   distributors: string[] | string;
+  lastFailure?: string;
 };
 
 type ClearRoomNotificationsResult = {
@@ -551,16 +552,20 @@ export const requestResetPushRegistration = async (): Promise<{ success: boolean
     if (!result?.success) return { success: false };
 
     // Endpoint arrives asynchronously from the distributor after register().
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 250));
       const status = await getBackgroundSyncStatus();
       if (status?.registered && status.endpoint) {
         return { success: true };
       }
+      if (status?.lastFailure) {
+        console.warn('[BackgroundSync] Registration failed while waiting:', status.lastFailure);
+        return { success: false };
+      }
     }
 
-    // Picker succeeded but endpoint not yet ack'd — still treat as success.
-    return { success: true };
+    console.warn('[BackgroundSync] Distributor selected but no endpoint received in time');
+    return { success: false };
   } catch (err) {
     console.error('[BackgroundSync] requestDistributorSetup failed:', err);
     return { success: false };
