@@ -87,4 +87,22 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Android 11+ package visibility for UnifiedPush distributors (ntfy, etc.) -->
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.LINK" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="unifiedpush" />
+        </intent>
+        <package android:name="io.heckel.ntfy" />
+    </queries>
 </manifest>

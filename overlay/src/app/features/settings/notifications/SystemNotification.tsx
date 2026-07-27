@@ -170,22 +170,30 @@ type PushStatus = {
   registered: boolean;
   distributor: string;
   endpoint: string;
+  distributors: string[];
 };
 
 /** Android-only section showing UnifiedPush registration status and controls. */
 function AndroidPushNotifications() {
   const [status, setStatus] = useState<PushStatus | undefined>(undefined);
   const [loading, setLoading] = useState(true);
+  const [lastError, setLastError] = useState<string | undefined>(undefined);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     const s = await getBackgroundSyncStatus();
+    const distributors = Array.isArray(s?.distributors)
+      ? s.distributors
+      : typeof s?.distributors === 'string' && s.distributors && s.distributors !== '[]'
+        ? [s.distributors]
+        : [];
     setStatus(
       s
         ? {
             registered: s.registered,
             distributor: s.distributor || '',
             endpoint: s.endpoint || '',
+            distributors,
           }
         : undefined
     );
@@ -198,8 +206,14 @@ function AndroidPushNotifications() {
 
   const [resetState, reset] = useAsyncCallback(
     useCallback(async () => {
-      await requestResetPushRegistration();
+      setLastError(undefined);
+      const result = await requestResetPushRegistration();
       await refresh();
+      if (!result.success) {
+        setLastError(
+          'Could not register a push distributor. Install ntfy (with UnifiedPush enabled), then try Reset again.'
+        );
+      }
     }, [refresh])
   );
 
@@ -214,6 +228,36 @@ function AndroidPushNotifications() {
     resetState.status === AsyncStatus.Loading ||
     pingState.status === AsyncStatus.Loading;
 
+  const statusDescription = (() => {
+    if (loading) return 'Loading status…';
+    if (status === undefined) {
+      return (
+        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+          Failed to read push status.
+        </Text>
+      );
+    }
+    if (status.registered) {
+      return (
+        <Text as="span" size="T200">
+          {`Distributor: ${status.distributor || 'unknown'}`}
+        </Text>
+      );
+    }
+    if (status.distributors.length === 0) {
+      return (
+        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+          No UnifiedPush distributor found. Install ntfy from Play Store/F-Droid and enable UnifiedPush in ntfy settings.
+        </Text>
+      );
+    }
+    return (
+      <Text as="span" style={{ color: color.Warning?.Main ?? color.Critical.Main }} size="T200">
+        {`Found ${status.distributors.join(', ')} but not registered yet. Tap Reset and pick ntfy.`}
+      </Text>
+    );
+  })();
+
   return (
     <Box direction="Column" gap="100">
       <Text size="L400">Android Push (UnifiedPush)</Text>
@@ -226,29 +270,20 @@ function AndroidPushNotifications() {
         <SettingTile
           title="Background Notifications"
           description={
-            loading ? (
-              'Loading status…'
-            ) : status === undefined ? (
-              <Text as="span" style={{ color: color.Critical.Main }} size="T200">
-                Failed to read push status.
-              </Text>
-            ) : status.registered ? (
-              <>
-                <Text as="span" size="T200">
-                  {`Distributor: ${status.distributor || 'unknown'}`}
+            <>
+              {statusDescription}
+              {lastError ? (
+                <Text as="span" style={{ color: color.Critical.Main, display: 'block' }} size="T200">
+                  {lastError}
                 </Text>
-              </>
-            ) : (
-              <Text as="span" style={{ color: color.Warning?.Main ?? color.Critical.Main }} size="T200">
-                Not registered. Tap &quot;Reset&quot; to choose a distributor app.
-              </Text>
-            )
+              ) : null}
+            </>
           }
           after={loading ? <Spinner variant="Secondary" /> : undefined}
         />
         <SettingTile
           title="Change Distributor"
-          description="Re-open the UnifiedPush distributor selection dialog."
+          description="Shows a list of installed UnifiedPush apps (ntfy, etc.) and registers the one you pick."
           after={
             <Button
               size="300"

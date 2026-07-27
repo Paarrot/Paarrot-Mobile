@@ -1,8 +1,11 @@
 package com.paarrot.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
+import android.content.pm.PackageManager
 import android.util.Log
+import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import org.json.JSONObject
 import org.unifiedpush.android.connector.FailedReason
@@ -48,31 +51,73 @@ object UnifiedPushManager {
             return
         }
 
-        UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { success ->
-            if (success) {
-                requestRegistration(context)
-            } else {
+        // Prefer an explicit in-app picker so the user always sees something;
+        // tryUseDefaultDistributor is silent when only one distributor is installed.
+        requestDistributorSetup(context, activity) { success ->
+            if (!success) {
                 dispatchRegistrationFailed(FailedReason.ACTION_REQUIRED.name, INSTANCE_DEFAULT)
             }
         }
     }
 
     /**
-     * Clears any saved distributor and re-opens the OS/default distributor picker
-     * (`unifiedpush://link`), then registers again on success.
+     * Clears any saved distributor and shows an in-app distributor picker.
+     * UnifiedPush's OS deeplink picker is silent when only one distributor
+     * (e.g. ntfy) is installed, which looked like a broken Reset button.
      */
     fun requestDistributorSetup(context: Context, activity: Activity, onDone: (Boolean) -> Unit) {
         runCatching { UnifiedPush.removeDistributor(context) }
             .onFailure { Log.w(TAG, "removeDistributor failed: ${it.message}") }
         clearEndpoint(context)
 
-        UnifiedPush.tryUseDefaultDistributor(activity) { success ->
-            if (success) {
-                requestRegistration(context)
-            } else {
-                dispatchRegistrationFailed(FailedReason.ACTION_REQUIRED.name, INSTANCE_DEFAULT)
-            }
-            onDone(success)
+        val distributors = runCatching { UnifiedPush.getDistributors(context) }
+            .getOrDefault(emptyList())
+        if (distributors.isEmpty()) {
+            Log.w(TAG, "No UnifiedPush distributors installed")
+            dispatchRegistrationFailed(FailedReason.ACTION_REQUIRED.name, INSTANCE_DEFAULT)
+            onDone(false)
+            return
+        }
+
+        val labels = distributors.map { packageName ->
+            distributorLabel(context, packageName)
+        }.toTypedArray()
+
+        // Guard against cancel + dismiss double-firing the callback.
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val finish: (Boolean) -> Unit = { success ->
+            if (finished.compareAndSet(false, true)) onDone(success)
+        }
+
+        activity.runOnUiThread {
+            AlertDialog.Builder(activity)
+                .setTitle("Choose push distributor")
+                .setItems(labels) { _, which ->
+                    val chosen = distributors.getOrNull(which)
+                    if (chosen.isNullOrBlank()) {
+                        finish(false)
+                        return@setItems
+                    }
+                    runCatching { UnifiedPush.saveDistributor(context, chosen) }
+                        .onFailure { Log.w(TAG, "saveDistributor failed: ${it.message}") }
+                    requestRegistration(context)
+                    finish(true)
+                }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> finish(false) }
+                .setOnCancelListener { finish(false) }
+                .show()
+        }
+    }
+
+    /** Human-readable label for a distributor package (falls back to package name). */
+    private fun distributorLabel(context: Context, packageName: String): String {
+        return try {
+            val pm = context.packageManager
+            val appInfo = pm.getApplicationInfo(packageName, 0)
+            val label = pm.getApplicationLabel(appInfo)?.toString().orEmpty()
+            if (label.isNotBlank() && label != packageName) "$label ($packageName)" else packageName
+        } catch (_: PackageManager.NameNotFoundException) {
+            packageName
         }
     }
 
@@ -128,10 +173,11 @@ object UnifiedPushManager {
         status.put("instance", getInstance(context) ?: INSTANCE_DEFAULT)
         status.put("registered", !getEndpoint(context).isNullOrBlank())
         status.put("distributor", runCatching { UnifiedPush.getSavedDistributor(context) }.getOrDefault(""))
-        status.put(
-            "distributors",
-            runCatching { UnifiedPush.getDistributors(context) }.getOrDefault(emptyList<String>())
-        )
+        val distributors = JSArray()
+        runCatching { UnifiedPush.getDistributors(context) }
+            .getOrDefault(emptyList())
+            .forEach { distributors.put(it) }
+        status.put("distributors", distributors)
         return status
     }
 

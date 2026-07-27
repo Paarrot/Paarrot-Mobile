@@ -537,6 +537,7 @@ export const setAppForegroundState = async (foreground: boolean): Promise<void> 
  * Re-opens the UnifiedPush distributor selection dialog.
  * Allows users to re-select or change their push notification distributor without terminal access.
  * Useful when the current endpoint becomes unavailable.
+ * Waits briefly for the distributor to return an endpoint so the settings UI can refresh accurately.
  */
 export const requestResetPushRegistration = async (): Promise<{ success: boolean }> => {
   if (!isBackgroundSyncSupported()) {
@@ -547,7 +548,19 @@ export const requestResetPushRegistration = async (): Promise<{ success: boolean
   try {
     const result = await MatrixBackgroundSync.requestDistributorSetup();
     console.log('[BackgroundSync] requestDistributorSetup completed:', result);
-    return result ?? { success: false };
+    if (!result?.success) return { success: false };
+
+    // Endpoint arrives asynchronously from the distributor after register().
+    for (let i = 0; i < 20; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const status = await getBackgroundSyncStatus();
+      if (status?.registered && status.endpoint) {
+        return { success: true };
+      }
+    }
+
+    // Picker succeeded but endpoint not yet ack'd — still treat as success.
+    return { success: true };
   } catch (err) {
     console.error('[BackgroundSync] requestDistributorSetup failed:', err);
     return { success: false };
