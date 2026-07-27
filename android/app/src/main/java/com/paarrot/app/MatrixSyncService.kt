@@ -21,6 +21,7 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
+import androidx.core.content.FileProvider
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -33,6 +34,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -274,19 +277,17 @@ class MatrixSyncService : Service() {
 
                 val body = when {
                     eventType == "m.room.encrypted" -> "Encrypted message"
-                    eventType == "m.sticker" -> {
-                        val raw = content.optString("body")
-                        if (raw.isNotBlank()) "🖼️ $raw" else "🖼️ Sticker"
-                    }
+                    eventType == "m.sticker" -> "🖼️ Sticker"
                     else -> {
                         val msgtype = content.optString("msgtype")
                         val rawBody = content.optString("body")
                         when (msgtype) {
-                            "m.image"   -> if (rawBody.isNotBlank()) "📷 $rawBody" else "📷 Photo"
+                            // Skip Matrix body for images/stickers — it's usually a useless filename.
+                            "m.image"   -> "📷 Photo"
                             "m.video"   -> if (rawBody.isNotBlank()) "🎥 $rawBody" else "🎥 Video"
                             "m.audio"   -> if (rawBody.isNotBlank()) "🎵 $rawBody" else "🎵 Audio"
                             "m.file"    -> if (rawBody.isNotBlank()) "📎 $rawBody" else "📎 File"
-                            "m.sticker" -> if (rawBody.isNotBlank()) "🖼️ $rawBody" else "🖼️ Sticker"
+                            "m.sticker" -> "🖼️ Sticker"
                             else        -> rawBody.takeIf { it.isNotBlank() }
                         }
                     }
@@ -836,9 +837,55 @@ class MatrixSyncService : Service() {
             val sender: String,
             val text: String,
             val timestamp: Long,
+            /** content:// URI for MessagingStyle image data, if any. */
+            val imageUri: String? = null,
         )
 
         private fun historyPrefsKey(roomId: String) = KEY_MSG_HISTORY_PREFIX + roomId
+
+        private fun notifImageDir(context: Context): File =
+            File(context.cacheDir, "notif-images").apply { mkdirs() }
+
+        /** Write [bitmap] to cache and return a FileProvider URI SystemUI can read. */
+        private fun persistNotificationImage(context: Context, bitmap: Bitmap): Uri? {
+            return try {
+                val file = File(notifImageDir(context), "img_${System.currentTimeMillis()}.jpg")
+                FileOutputStream(file).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file,
+                )
+                // SystemUI reads MessagingStyle image URIs; grant explicitly on OEM builds.
+                runCatching {
+                    context.grantUriPermission(
+                        "com.android.systemui",
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                uri
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to persist notification image: ${e.message}")
+                null
+            }
+        }
+
+        private fun deleteNotificationImageUri(context: Context, uriString: String?) {
+            if (uriString.isNullOrBlank()) return
+            try {
+                val uri = Uri.parse(uriString)
+                val path = uri.path ?: return
+                // FileProvider paths look like /my_cache_images/notif-images/...
+                val name = path.substringAfterLast('/')
+                if (name.isBlank()) return
+                File(notifImageDir(context), name).delete()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to delete notification image: ${e.message}")
+            }
+        }
 
         private fun loadMessageHistory(context: Context, roomId: String): List<PendingNotifMessage> {
             val raw = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -852,8 +899,9 @@ class MatrixSyncService : Service() {
                         val sender = obj.optString("sender")
                         val text = obj.optString("text")
                         val ts = obj.optLong("ts", 0L)
+                        val imageUri = obj.optString("imageUri").takeIf { it.isNotBlank() }
                         if (sender.isBlank() || text.isBlank()) continue
-                        add(PendingNotifMessage(sender, text, ts))
+                        add(PendingNotifMessage(sender, text, ts, imageUri))
                     }
                 }
             } catch (e: Exception) {
@@ -869,12 +917,14 @@ class MatrixSyncService : Service() {
         ) {
             val arr = JSONArray()
             for (msg in messages) {
-                arr.put(
-                    JSONObject()
-                        .put("sender", msg.sender)
-                        .put("text", msg.text)
-                        .put("ts", msg.timestamp)
-                )
+                val obj = JSONObject()
+                    .put("sender", msg.sender)
+                    .put("text", msg.text)
+                    .put("ts", msg.timestamp)
+                if (!msg.imageUri.isNullOrBlank()) {
+                    obj.put("imageUri", msg.imageUri)
+                }
+                arr.put(obj)
             }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
@@ -883,6 +933,9 @@ class MatrixSyncService : Service() {
         }
 
         private fun clearMessageHistory(context: Context, roomId: String) {
+            for (msg in loadMessageHistory(context, roomId)) {
+                deleteNotificationImageUri(context, msg.imageUri)
+            }
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .remove(historyPrefsKey(roomId))
@@ -894,12 +947,19 @@ class MatrixSyncService : Service() {
             roomId: String,
             sender: String,
             text: String,
+            imageUri: String? = null,
         ): List<PendingNotifMessage> {
-            val next = (loadMessageHistory(context, roomId) + PendingNotifMessage(
+            val previous = loadMessageHistory(context, roomId)
+            val next = (previous + PendingNotifMessage(
                 sender = sender,
                 text = text,
                 timestamp = System.currentTimeMillis(),
+                imageUri = imageUri,
             )).takeLast(MAX_MESSAGING_HISTORY)
+            // Drop image files for messages that fell out of the sliding window.
+            for (dropped in previous - next.toSet()) {
+                deleteNotificationImageUri(context, dropped.imageUri)
+            }
             saveMessageHistory(context, roomId, next)
             return next
         }
@@ -967,7 +1027,14 @@ class MatrixSyncService : Service() {
             }
             val senderPerson = personBuilder.build()
 
-            val history = appendMessageHistory(context, roomId, resolvedSender, resolvedMessage)
+            val imageUri = inlineImage?.let { persistNotificationImage(context, it) }?.toString()
+            val history = appendMessageHistory(
+                context,
+                roomId,
+                resolvedSender,
+                resolvedMessage,
+                imageUri,
+            )
 
             val channelId = channelIdForKindStatic(kind)
             val collapsedTitle = if (isDm || resolvedConversation.isNullOrBlank()) {
@@ -1008,13 +1075,17 @@ class MatrixSyncService : Service() {
                         .setImportant(true)
                         .build()
                 }
-                messagingStyle.addMessage(
-                    NotificationCompat.MessagingStyle.Message(
-                        msg.text,
-                        msg.timestamp,
-                        person,
-                    )
+                val line = NotificationCompat.MessagingStyle.Message(
+                    msg.text,
+                    msg.timestamp,
+                    person,
                 )
+                // Attach image on the message itself so multi-message history keeps thumbnails
+                // (BigPictureStyle replaces MessagingStyle and culls prior lines).
+                if (!msg.imageUri.isNullOrBlank()) {
+                    line.setData("image/jpeg", Uri.parse(msg.imageUri))
+                }
+                messagingStyle.addMessage(line)
             }
 
             val builder = NotificationCompat.Builder(context, channelId)
@@ -1043,17 +1114,6 @@ class MatrixSyncService : Service() {
 
             // Collapsed shade avatar (large icon). Small icon must stay the monochrome app mark.
             if (avatar != null) builder.setLargeIcon(avatar)
-
-            // Image attachments: keep MessagingStyle history; BigPicture would wipe prior lines.
-            if (inlineImage != null && history.size == 1) {
-                builder.setStyle(
-                    NotificationCompat.BigPictureStyle()
-                        .bigPicture(inlineImage)
-                        .bigLargeIcon(avatar)
-                        .setBigContentTitle(collapsedTitle)
-                        .setSummaryText(collapsedText)
-                )
-            }
 
             nm.notify(roomNotifId, builder.build())
 

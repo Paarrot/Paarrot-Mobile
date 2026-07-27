@@ -121,7 +121,8 @@ function notificationBodyFromEvent(mEvent: MatrixEvent): string | undefined {
   const rawBody = typeof content.body === 'string' ? content.body : undefined;
   switch (content.msgtype) {
     case 'm.image':
-      return rawBody ? `📷 ${rawBody}` : '📷 Photo';
+      // Matrix body is usually a filename — skip it in the shade.
+      return '📷 Photo';
     case 'm.video':
       return rawBody ? `🎥 ${rawBody}` : '🎥 Video';
     case 'm.audio':
@@ -129,7 +130,7 @@ function notificationBodyFromEvent(mEvent: MatrixEvent): string | undefined {
     case 'm.file':
       return rawBody ? `📎 ${rawBody}` : '📎 File';
     case 'm.sticker':
-      return rawBody ? `🖼️ ${rawBody}` : '🖼️ Sticker';
+      return '🖼️ Sticker';
     default:
       return rawBody;
   }

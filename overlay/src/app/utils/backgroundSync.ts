@@ -9,6 +9,8 @@ type UnifiedPushStatus = {
   distributor: string;
   distributors: string[] | string;
   lastFailure?: string;
+  /** OEM App Boot / AUTO_START is blocking distributor broadcasts (e.g. TCL). */
+  autoStartBlocked?: boolean;
 };
 
 type ClearRoomNotificationsResult = {

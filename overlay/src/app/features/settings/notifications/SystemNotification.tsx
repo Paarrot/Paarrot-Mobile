@@ -172,6 +172,7 @@ type PushStatus = {
   endpoint: string;
   distributors: string[];
   lastFailure: string;
+  autoStartBlocked: boolean;
 };
 
 /** Android-only section showing UnifiedPush registration status and controls. */
@@ -196,6 +197,7 @@ function AndroidPushNotifications() {
             endpoint: s.endpoint || '',
             distributors,
             lastFailure: s.lastFailure || '',
+            autoStartBlocked: Boolean(s.autoStartBlocked),
           }
         : undefined
     );
@@ -243,6 +245,13 @@ function AndroidPushNotifications() {
       return (
         <Text as="span" size="T200">
           {`Distributor: ${status.distributor || 'unknown'}`}
+        </Text>
+      );
+    }
+    if (status.lastFailure === 'AUTO_START_BLOCKED' || status.autoStartBlocked) {
+      return (
+        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+          Phone is blocking auto-start for Paarrot. Open App Boot / Auto-start settings, allow Paarrot (and ntfy), then tap Reset.
         </Text>
       );
     }

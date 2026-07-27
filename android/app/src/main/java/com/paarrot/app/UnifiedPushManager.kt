@@ -2,10 +2,13 @@ package com.paarrot.app
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.AppOpsManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import com.getcapacitor.JSArray
@@ -177,6 +180,20 @@ object UnifiedPushManager {
                 if (!getEndpoint(context).isNullOrBlank()) return@postDelayed
                 Log.w(TAG, "No endpoint yet after ${REGISTER_DELAY_MS}ms — retrying register")
                 requestRegistration(context)
+
+                // OEM "App Boot" / AUTO_START can silently drop NEW_ENDPOINT (seen on TCL).
+                mainHandler.postDelayed({
+                    if (gen != setupGeneration) return@postDelayed
+                    if (!getEndpoint(context).isNullOrBlank()) return@postDelayed
+                    val reason = if (isAutoStartRestricted(context)) {
+                        "AUTO_START_BLOCKED"
+                    } else {
+                        "NO_ENDPOINT"
+                    }
+                    Log.w(TAG, "Still no endpoint after register retries — $reason")
+                    persistLastFailure(context, reason)
+                    dispatchRegistrationFailed(reason, INSTANCE_DEFAULT)
+                }, 4_000L)
             }, REGISTER_DELAY_MS)
         }, if (previous.isNotBlank() && previous != chosen) REGISTER_DELAY_MS else 150L)
     }
@@ -246,12 +263,33 @@ object UnifiedPushManager {
         status.put("registered", !getEndpoint(context).isNullOrBlank())
         status.put("distributor", runCatching { UnifiedPush.getSavedDistributor(context) }.getOrDefault(""))
         status.put("lastFailure", getLastFailure(context) ?: "")
+        status.put("autoStartBlocked", isAutoStartRestricted(context))
         val distributors = JSArray()
         runCatching { UnifiedPush.getDistributors(context) }
             .getOrDefault(emptyList())
             .forEach { distributors.put(it) }
         status.put("distributors", distributors)
         return status
+    }
+
+    /**
+     * TCL / some OEMs expose an AUTO_START app-op. When it is not MODE_ALLOWED,
+     * [AppBootManager] drops distributor broadcasts such as NEW_ENDPOINT, so
+     * UnifiedPush never finishes registering even though ntfy is selected.
+     */
+    private fun isAutoStartRestricted(context: Context): Boolean {
+        return try {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow("android:auto_start", Process.myUid(), context.packageName)
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow("android:auto_start", Process.myUid(), context.packageName)
+            }
+            mode != AppOpsManager.MODE_ALLOWED && mode != AppOpsManager.MODE_DEFAULT
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun onNewEndpoint(context: Context, endpoint: String, instance: String) {
