@@ -1,0 +1,93 @@
+name: Update cinny submodule
+
+on:
+  workflow_dispatch:
+    inputs:
+      cinny_sha:
+        description: cinny commit SHA to pin (default: origin/main)
+        required: false
+        type: string
+
+concurrency:
+  group: update-cinny-submodule
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: master
+
+      - name: Update cinny submodule
+        id: bump
+        run: |
+          set -euo pipefail
+
+          ORIGIN_URL=$(git remote get-url origin)
+          ORIGIN_URL=${ORIGIN_URL%/}
+          ORIGIN_URL=${ORIGIN_URL%.git}
+          BASE_URL=${ORIGIN_URL%/*}
+          CINNY_URL="${BASE_URL}/cinny.git"
+          echo "Rewriting submodule URL to ${CINNY_URL}"
+          git config submodule.cinny.url "${CINNY_URL}"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+          TARGET_SHA="${{ inputs.cinny_sha }}"
+          git -C cinny fetch origin main
+
+          if [ -n "${TARGET_SHA}" ]; then
+            git -C cinny checkout --detach "${TARGET_SHA}"
+          else
+            git -C cinny checkout --detach origin/main
+          fi
+
+          NEW_SHA=$(git -C cinny rev-parse HEAD)
+          OLD_SHA=$(git rev-parse HEAD:cinny)
+          SUBJECT=$(git -C cinny log -1 --pretty=%s)
+
+          echo "old=${OLD_SHA}"
+          echo "new=${NEW_SHA}"
+          echo "subject=${SUBJECT}"
+
+          if [ "${OLD_SHA}" = "${NEW_SHA}" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "cinny already at ${NEW_SHA}; nothing to do"
+            exit 0
+          fi
+
+          git add cinny
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git commit -m "Bump cinny: ${SUBJECT}"
+
+          {
+            echo "changed=true"
+            echo "sha=${NEW_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push submodule bump
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            git fetch origin master
+            git rebase origin/master || {
+              git rebase --abort || true
+              echo "Failed to rebase submodule bump onto latest master"
+              exit 1
+            }
+            if git push origin HEAD:master; then
+              echo "Pushed cinny bump (${{ steps.bump.outputs.sha }})"
+              exit 0
+            fi
+            echo "Push rejected on attempt ${attempt}, retrying"
+          done
+          echo "Failed to push submodule bump after 3 attempts"
+          exit 1
