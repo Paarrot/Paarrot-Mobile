@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       cinny_sha:
-        description: cinny commit SHA to pin (default: origin/main)
+        description: "cinny commit SHA to pin (defaults to origin/main)"
         required: false
         type: string
 
