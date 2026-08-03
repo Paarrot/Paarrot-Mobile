@@ -21,7 +21,9 @@ jobs:
         with:
           fetch-depth: 0
           submodules: false
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT so the submodule bump push can trigger build.yml
+          # (GITHUB_TOKEN pushes do not start new workflows).
+          token: ${{ secrets.ACTIONS_TOKEN }}
           ref: master
 
       - name: Update cinny submodule
