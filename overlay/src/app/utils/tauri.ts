@@ -4,7 +4,7 @@
  */
 export const openExternalUrl = async (url: string): Promise<void> => {
   console.log('[openExternalUrl] called with:', url);
-  
+
   // Use Electron's shell.openExternal if in Electron
   if (isElectron()) {
     try {
@@ -18,7 +18,20 @@ export const openExternalUrl = async (url: string): Promise<void> => {
       console.warn('[openExternalUrl] Electron shell.openExternal failed:', err);
     }
   }
-  
+
+  // Capacitor: SSO (and other handoffs) need Chrome Custom Tabs / in-app Browser
+  // so paarrot:// redirects return into the app instead of a blank external tab.
+  if (isCapacitorNative()) {
+    try {
+      const { Browser } = await import('@capacitor/browser');
+      await Browser.open({ url, presentationStyle: 'popover' });
+      console.log('[openExternalUrl] Capacitor Browser.open succeeded');
+      return;
+    } catch (err) {
+      console.warn('[openExternalUrl] Capacitor Browser.open failed:', err);
+    }
+  }
+
   // Use Tauri for actual Tauri builds
   if (isTauri() && !isElectron()) {
     try {
@@ -30,7 +43,7 @@ export const openExternalUrl = async (url: string): Promise<void> => {
       return;
     } catch (pluginErr) {
       console.warn('[openExternalUrl] Tauri opener plugin failed:', pluginErr);
-      
+
       // Fallback: try the custom command (useful if plugin fails due to ACL)
       try {
         console.log('[openExternalUrl] trying Tauri invoke command fallback...');
@@ -43,7 +56,7 @@ export const openExternalUrl = async (url: string): Promise<void> => {
       }
     }
   }
-  
+
   console.log('[openExternalUrl] falling back to window.open');
   window.open(url, '_blank');
 };

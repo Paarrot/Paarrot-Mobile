@@ -45,22 +45,42 @@ type MobileSwipeGestureHostProps = {
   children: ReactNode;
 };
 
+const IGNORE_BACK_SELECTOR =
+  'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], [data-carousel-scroller], [data-disable-swipe-back="true"]';
+
+const IGNORE_REPLY_SELECTOR =
+  'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], [data-carousel-scroller], [data-disable-swipe-reply="true"]';
+
+/** True when the touch starts on (or inside) a horizontally scrollable region like an image carousel. */
+const isInsideHorizontalScroller = (target: EventTarget | null): boolean => {
+  if (!(target instanceof Element)) return false;
+
+  let el: Element | null = target;
+  while (el && el !== document.documentElement) {
+    if (el instanceof HTMLElement) {
+      const style = window.getComputedStyle(el);
+      const overflowX = style.overflowX;
+      if (
+        (overflowX === 'auto' || overflowX === 'scroll' || overflowX === 'overlay') &&
+        el.scrollWidth > el.clientWidth + 1
+      ) {
+        return true;
+      }
+    }
+    el = el.parentElement;
+  }
+
+  return false;
+};
+
 const shouldIgnoreBackTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof Element)) return true;
-  return Boolean(
-    target.closest(
-      'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], [data-carousel-scroller], [data-disable-swipe-back="true"]'
-    )
-  );
+  return Boolean(target.closest(IGNORE_BACK_SELECTOR)) || isInsideHorizontalScroller(target);
 };
 
 const shouldIgnoreReplyTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof Element)) return true;
-  return Boolean(
-    target.closest(
-      'input, textarea, [contenteditable="true"], [data-allow-text-selection="true"], [data-carousel-scroller], [data-disable-swipe-reply="true"]'
-    )
-  );
+  return Boolean(target.closest(IGNORE_REPLY_SELECTOR)) || isInsideHorizontalScroller(target);
 };
 
 const findMessageElement = (target: EventTarget | null): HTMLElement | null => {

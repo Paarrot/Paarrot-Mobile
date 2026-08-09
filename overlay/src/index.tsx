@@ -16,6 +16,8 @@ import { trimTrailingSlash } from './app/utils/common';
 import App from './app/pages/App';
 import { applySafeAreaInsets, isTauri } from './app/utils/tauri';
 import { enableViewTransitionsForNavigation } from './app/utils/viewTransitions';
+import { initAndroidDeepLinks } from './app/utils/androidDeepLink';
+import { registerAndroidMediaSaver } from './app/utils/registerAndroidMediaSaver';
 
 // import i18n (needs to be bundled ;))
 import './app/i18n';
@@ -27,6 +29,12 @@ applySafeAreaInsets();
 
 // Enable View Transitions API for smooth navigation
 enableViewTransitionsForNavigation();
+
+// Capacitor: paarrot:// SSO return closes Custom Tabs and lands on loginToken
+void initAndroidDeepLinks();
+
+// Capacitor Android: MediaStore saves for images / videos / files
+registerAndroidMediaSaver();
 
 // Register Service Worker
 if ('serviceWorker' in navigator) {
