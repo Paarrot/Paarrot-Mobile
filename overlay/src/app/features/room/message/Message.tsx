@@ -785,7 +785,7 @@ export const Message = as<'div', MessageProps>(
     const senderAvatarMxc = getMemberAvatarMxc(room, senderId);
 
     // Get custom user color from avatar metadata (takes priority)
-    const customUserColor = useOtherUserColor(senderId, senderAvatarMxc);
+    const customUserColor = useOtherUserColor(senderId, room);
 
     const tagColor = memberPowerTag?.color
       ? accessibleTagColors?.get(memberPowerTag.color)
