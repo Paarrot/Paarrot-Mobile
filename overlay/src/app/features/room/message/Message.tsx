@@ -62,6 +62,10 @@ import colorMXID from '../../../../util/colorMXID';
 import { getPowerTagIconSrc } from '../../../hooks/useMemberPowerTag';
 import { Presence, useUserPresence } from '../../../hooks/useUserPresence';
 import { useOtherUserColor } from '../../../hooks/useUserColor';
+import { useIsDirectRoom } from '../../../hooks/useRoom';
+import { useOtherUserCollectibles } from '../../../hooks/useUserCollectibles';
+import { pickAvatarDecorationUrl, pickNameplateUrl } from '../../../utils/collectibleAssets';
+import * as avatarDecorationCss from '../../../styles/AvatarDecoration.css';
 
 export type ReactionHandler = (keyOrMxc: string, shortcode: string) => void;
 
@@ -754,8 +758,15 @@ export const Message = as<'div', MessageProps>(
   ) => {
     const mx = useMatrixClient();
     const useAuthentication = useMediaAuthentication();
+    const direct = useIsDirectRoom();
     const senderId = mEvent.getSender() ?? '';
     const senderPresence = useUserPresence(senderId);
+    const { assetUrls } = useOtherUserCollectibles(senderId);
+    const nameplateUrl = pickNameplateUrl(assetUrls);
+    const nameplateIsVideo = Boolean(
+      assetUrls['nameplate:animated'] || assetUrls['nameplate:asset.webm']
+    );
+    const avatarDecorationUrl = pickAvatarDecorationUrl(assetUrls);
 
     const [hover, setHover] = useState(false);
     const { hoverProps } = useHover({ onHoverChange: setHover });
@@ -796,6 +807,7 @@ export const Message = as<'div', MessageProps>(
 
     // Priority: custom user color > tag color (non-legacy) > colorMXID (legacy)
     const usernameColor = customUserColor ?? (legacyUsernameColor ? colorMXID(senderId) : tagColor);
+    const showNameplate = direct && hover && Boolean(nameplateUrl);
 
     const headerJSX = !collapse && (
       <Box
@@ -824,23 +836,41 @@ export const Message = as<'div', MessageProps>(
           </Username>
           {tagIconSrc && <PowerIcon size="100" iconSrc={tagIconSrc} />}
         </Box>
-        <Box shrink="No" gap="100">
-          {messageLayout === MessageLayout.Modern && hover && (
-            <>
-              <Text as="span" size="T200" priority="300">
-                {senderId}
-              </Text>
-              <Text as="span" size="T200" priority="300">
-                |
-              </Text>
-            </>
+        <Box shrink="No" className={css.MessageNameplateAnchor}>
+          <Box shrink="No" gap="100" alignItems="Center">
+            {messageLayout === MessageLayout.Modern && hover && (
+              <>
+                <Text as="span" size="T200" priority="300">
+                  {senderId}
+                </Text>
+                <Text as="span" size="T200" priority="300">
+                  |
+                </Text>
+              </>
+            )}
+            <Time
+              ts={mEvent.getTs()}
+              compact={messageLayout === MessageLayout.Compact}
+              hour24Clock={hour24Clock}
+              dateFormatString={dateFormatString}
+            />
+          </Box>
+          {showNameplate && (
+            <div className={css.MessageNameplateWrap}>
+              {nameplateIsVideo ? (
+                <video
+                  className={css.MessageNameplateOverlay}
+                  src={nameplateUrl}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                />
+              ) : (
+                <img className={css.MessageNameplateOverlay} src={nameplateUrl} alt="" draggable={false} />
+              )}
+            </div>
           )}
-          <Time
-            ts={mEvent.getTs()}
-            compact={messageLayout === MessageLayout.Compact}
-            hour24Clock={hour24Clock}
-            dateFormatString={dateFormatString}
-          />
         </Box>
       </Box>
     );
@@ -857,24 +887,38 @@ export const Message = as<'div', MessageProps>(
       <AvatarBase
         className={messageLayout === MessageLayout.Bubble ? css.BubbleAvatarBase : undefined}
       >
-        <Avatar
-          className={classNames(css.MessageAvatar, presenceClass)}
-          as="button"
-          size="300"
-          data-user-id={senderId}
-          onClick={onUserClick}
-        >
-          <UserAvatar
-            userId={senderId}
-            src={
-              senderAvatarMxc
-                ? mxcUrlToHttp(mx, senderAvatarMxc, useAuthentication, 48, 48, 'crop') ?? undefined
-                : undefined
-            }
-            alt={senderDisplayName}
-            renderFallback={() => <Icon size="200" src={Icons.User} filled />}
-          />
-        </Avatar>
+        <div className={css.MessageAvatarStack}>
+          <Avatar
+            className={classNames(
+              avatarDecorationUrl ? css.MessageAvatarCircular : css.MessageAvatar,
+              !avatarDecorationUrl && presenceClass
+            )}
+            radii={avatarDecorationUrl ? 'Pill' : undefined}
+            as="button"
+            size="300"
+            data-user-id={senderId}
+            onClick={onUserClick}
+          >
+            <UserAvatar
+              userId={senderId}
+              src={
+                senderAvatarMxc
+                  ? mxcUrlToHttp(mx, senderAvatarMxc, useAuthentication, 48, 48, 'crop') ?? undefined
+                  : undefined
+              }
+              alt={senderDisplayName}
+              renderFallback={() => <Icon size="200" src={Icons.User} filled />}
+            />
+          </Avatar>
+          {avatarDecorationUrl && (
+            <img
+              className={avatarDecorationCss.AvatarDecorationOverlay}
+              src={avatarDecorationUrl}
+              alt=""
+              draggable={false}
+            />
+          )}
+        </div>
       </AvatarBase>
     );
 
@@ -959,6 +1003,10 @@ export const Message = as<'div', MessageProps>(
         {...focusWithinProps}
         ref={ref}
       >
+        <div
+          className={css.MessageContentLayer}
+          data-message-nameplate-readable={showNameplate ? '' : undefined}
+        >
         {!edit && (hover || !!menuAnchor || !!emojiBoardAnchor) && (
           <div className={css.MessageOptionsBase}>
             <Menu className={css.MessageOptionsBar} variant="SurfaceVariant">
@@ -1247,6 +1295,7 @@ export const Message = as<'div', MessageProps>(
             {msgContentJSX}
           </ModernLayout>
         )}
+        </div>
       </MessageBase>
     );
   }

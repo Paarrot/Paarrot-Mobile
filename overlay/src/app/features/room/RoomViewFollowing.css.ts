@@ -2,6 +2,20 @@ import { style } from '@vanilla-extract/css';
 import { recipe } from '@vanilla-extract/recipes';
 import { DefaultReset, color, config, toRem } from 'folds';
 
+/** Floats typing + read receipts over the bottom of the timeline. */
+export const RoomViewBottomFloat = style({
+  position: 'absolute',
+  bottom: 0,
+  left: 0,
+  right: 0,
+  zIndex: 1,
+  display: 'flex',
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: config.space.S200,
+  pointerEvents: 'none',
+});
+
 export const RoomViewFollowingPlaceholder = style([
   DefaultReset,
   {
@@ -15,20 +29,12 @@ export const RoomViewFollowing = recipe({
     {
       minHeight: toRem(28),
       padding: `0 ${config.space.S400}`,
-      width: '100%',
-      backgroundColor: color.Surface.Container,
+      marginLeft: 'auto',
+      maxWidth: '50%',
+      backgroundColor: 'transparent',
       color: color.Surface.OnContainer,
       outline: 'none',
-      selectors: {
-        // Compact floating chip while the keyboard is open.
-        '[data-composer-flush="true"] &': {
-          minHeight: 0,
-          width: 'auto',
-          maxWidth: '100%',
-          padding: `${config.space.S100} ${config.space.S200}`,
-          backgroundColor: 'transparent',
-        },
-      },
+      pointerEvents: 'auto',
     },
   ],
   variants: {

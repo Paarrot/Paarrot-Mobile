@@ -14,7 +14,8 @@ import { RoomTimeline } from './RoomTimeline';
 import { RoomViewTyping } from './RoomViewTyping';
 import { RoomTombstone } from './RoomTombstone';
 import { RoomInput } from './RoomInput';
-import { RoomViewFollowing, RoomViewFollowingPlaceholder } from './RoomViewFollowing';
+import { RoomViewFollowing } from './RoomViewFollowing';
+import * as roomViewCss from './RoomViewFollowing.css';
 import { Page } from '../../components/page';
 import { RoomViewHeader } from './RoomViewHeader';
 import { useKeyDown } from '../../hooks/useKeyDown';
@@ -116,7 +117,7 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
       ) : (
         <>
           <MobileSwipeToReplyLayer room={room} editor={editor}>
-            <Box grow="Yes" direction="Column">
+            <Box grow="Yes" direction="Column" style={{ position: 'relative', minHeight: 0 }}>
               <RoomTimeline
                 key={roomId}
                 room={room}
@@ -124,7 +125,10 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
                 roomInputRef={roomInputRef}
                 editor={editor}
               />
-              <RoomViewTyping room={room} />
+              <div className={roomViewCss.RoomViewBottomFloat}>
+                <RoomViewTyping room={room} />
+                {!hideActivity && <RoomViewFollowing room={room} />}
+              </div>
             </Box>
           </MobileSwipeToReplyLayer>
           <Box
@@ -134,13 +138,6 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
             data-composer-flush={flushComposer ? 'true' : undefined}
             className={composerCss.ComposerDock}
           >
-            {immersive && !hideActivity && (
-              <div className={composerCss.FollowingFloat}>
-                <div className={composerCss.FollowingFloatHit}>
-                  <RoomViewFollowing room={room} />
-                </div>
-              </div>
-            )}
             <div style={{ padding: composerPadding }}>
               {tombstoneEvent ? (
                 <RoomTombstone
@@ -171,12 +168,6 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
                 </>
               )}
             </div>
-            {!immersive &&
-              (hideActivity ? (
-                <RoomViewFollowingPlaceholder />
-              ) : (
-                <RoomViewFollowing room={room} />
-              ))}
           </Box>
         </>
       )}
