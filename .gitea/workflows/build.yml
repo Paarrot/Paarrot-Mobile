@@ -83,7 +83,10 @@ jobs:
           java-version: '21'
       
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          # Google removed the legacy `tools` package; v3 still tries to install it.
+          packages: platform-tools
       
       - name: Install dependencies (root)
         run: npm ci --prefer-offline
