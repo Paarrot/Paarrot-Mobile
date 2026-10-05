@@ -698,8 +698,8 @@ class MatrixSyncService : Service() {
     ): Bitmap? {
         val info = content.optJSONObject("info")
         val thumbnailMxc =
-            info?.optString("thumbnail_url").takeIf { it.startsWith("mxc://") }
-                ?: info?.optJSONObject("thumbnail_file")?.optString("url").takeIf { it.startsWith("mxc://") }
+            info?.optString("thumbnail_url")?.takeIf { it.startsWith("mxc://") }
+                ?: info?.optJSONObject("thumbnail_file")?.optString("url")?.takeIf { it.startsWith("mxc://") }
         if (thumbnailMxc != null) {
             for (url in mxcToThumbnailUrls(thumbnailMxc, homeserver, 512)) {
                 downloadBitmap(url, token)?.let { return it }
@@ -707,7 +707,7 @@ class MatrixSyncService : Service() {
         }
         val fullMxc =
             content.optString("url").takeIf { it.startsWith("mxc://") }
-                ?: content.optJSONObject("file")?.optString("url").takeIf { it.startsWith("mxc://") }
+                ?: content.optJSONObject("file")?.optString("url")?.takeIf { it.startsWith("mxc://") }
         if (fullMxc != null) {
             for (url in mxcToDownloadUrls(fullMxc, homeserver)) {
                 downloadBitmap(url, token)?.let { return it }
