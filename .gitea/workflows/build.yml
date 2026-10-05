@@ -9,6 +9,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+concurrency:
+  group: build
+  cancel-in-progress: true
+
 jobs:
   increment-version:
     runs-on: ubuntu-latest
@@ -75,6 +79,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Cache npm packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('package-lock.json', 'cinny/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
       
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -87,6 +98,15 @@ jobs:
         with:
           # Google removed the legacy `tools` package; v3 still tries to install it.
           packages: platform-tools
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper/dists
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
       
       - name: Install dependencies (root)
         run: npm ci --prefer-offline
