@@ -104,14 +104,52 @@ async function waitForEventDecryption(mx: MatrixClient, mEvent: MatrixEvent) {
   });
 }
 
+/** Short, single-line snippet of an event's body for use inside a notification. */
+function eventBodySnippet(mEvent: MatrixEvent, maxLength = 60): string {
+  const content = mEvent.getClearContent() ?? mEvent.getContent();
+  const rawBody = typeof content.body === 'string' ? content.body : '';
+  if (!rawBody) return '';
+  const trimmed = rawBody.replace(/\s+/g, ' ').trim();
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
+}
+
+/** Render a reaction emoji to a PNG base64 string so it can be used as the notification icon. */
+async function renderEmojiToBase64(emoji: string): Promise<string | undefined> {
+  try {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return undefined;
+
+    ctx.font = `${Math.floor(size * 0.7)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillText(emoji, size / 2, size / 2);
+
+    const dataUrl = canvas.toDataURL('image/png');
+    return dataUrl.split(',')[1];
+  } catch (err) {
+    console.warn('[Notifications] Failed to render emoji icon:', err);
+    return undefined;
+  }
+}
+
 /** Build a human-readable notification body from (possibly decrypted) event content. */
-function notificationBodyFromEvent(mEvent: MatrixEvent): string | undefined {
+function notificationBodyFromEvent(mx: MatrixClient, mEvent: MatrixEvent): string | undefined {
   const content = mEvent.getClearContent() ?? mEvent.getContent();
   const eventType = mEvent.getType();
 
   if (eventType === 'm.reaction') {
-    const reactionKey = content['m.relates_to']?.key;
-    return reactionKey ? `reacted with ${reactionKey}` : 'reacted to a message';
+    const relates = content['m.relates_to'];
+    const reactionKey = relates?.key;
+    const parent = relates?.event_id ? mx.getCachedEventById(relates.event_id) : undefined;
+    const snippet = parent ? eventBodySnippet(parent) : '';
+
+    if (reactionKey && snippet) return `reacted with ${reactionKey} to "${snippet}"`;
+    if (reactionKey) return `reacted with ${reactionKey}`;
+    return 'reacted to a message';
   }
 
   if (eventType === 'm.room.encrypted' || mEvent.isDecryptionFailure()) {
@@ -684,12 +722,26 @@ function MessageNotifications() {
               : Promise.resolve(undefined),
           ]);
 
-          const messageBody = notificationBodyFromEvent(mEvent);
+          // Reactions have no media, so render the reaction emoji as the notification icon.
+          let finalIconBase64 = iconBase64;
+          let finalRoomAvatar = roomAvatar;
+          if (mEvent.getType() === 'm.reaction') {
+            const emoji = (mEvent.getClearContent() ?? mEvent.getContent())['m.relates_to']?.key;
+            if (emoji) {
+              const emojiBase64 = await renderEmojiToBase64(emoji);
+              if (emojiBase64) {
+                finalIconBase64 = emojiBase64;
+                finalRoomAvatar = `data:image/png;base64,${emojiBase64}`;
+              }
+            }
+          }
+
+          const messageBody = notificationBodyFromEvent(mx, mEvent);
 
           notify({
             roomName: room.name ?? 'Unknown',
-            roomAvatar,
-            iconBase64,
+            roomAvatar: finalRoomAvatar,
+            iconBase64: finalIconBase64,
             bigPictureBase64,
             username,
             messageBody,

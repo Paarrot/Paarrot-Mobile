@@ -377,12 +377,50 @@ class MatrixSyncService : Service() {
                     val isMessageLike =
                         eventType == "m.room.message" ||
                             eventType == "m.room.encrypted" ||
-                            eventType == "m.sticker"
+                            eventType == "m.sticker" ||
+                            eventType == "m.reaction"
                     if (!isMessageLike) continue
                     if (sender.isNotBlank() && sender == myUserId) continue
                     if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
 
                     val content = event.optJSONObject("content") ?: JSONObject()
+
+                    // Reactions have no media, so use the emoji as the icon and quote the
+                    // reacted-to message as the body.
+                    if (eventType == "m.reaction") {
+                        val relates = content.optJSONObject("m.relates_to")
+                        val key = relates?.optString("key").orEmpty()
+                        if (key.isBlank()) continue
+                        val parentEventId = relates?.optString("event_id").orEmpty()
+                        val snippet =
+                            if (parentEventId.isNotBlank())
+                                fetchEventBodySnippet(homeserver, token, roomId, parentEventId)
+                            else ""
+                        val reactionBody =
+                            if (snippet.isNotBlank()) "reacted with $key to \"$snippet\""
+                            else "reacted with $key"
+
+                        val profile = try {
+                            resolveProfile(sender, homeserver, token)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "profile fetch failed: ${e.message}")
+                            UserProfile(sender.substringAfter("@").substringBefore(":").ifBlank { "Someone" }, null)
+                        }
+
+                        Log.i(TAG, "notify room=$roomId type=$eventType sender=$sender")
+                        showMessageNotification(
+                            nm,
+                            roomId,
+                            profile.displayName,
+                            reactionBody,
+                            renderEmojiBitmap(key),
+                            null,
+                            resolveGroupInfo(roomId, notifyCtx),
+                        )
+                        notifiedForRoom = true
+                        continue
+                    }
+
                     val encrypted = eventType == "m.room.encrypted"
                     val msgtype = content.optString("msgtype")
                     val rawBody = content.optString("body")
@@ -585,6 +623,25 @@ class MatrixSyncService : Service() {
             Log.w(TAG, "Failed to fetch $urlString: ${e.message}")
             null
         }
+    }
+
+    /** Fetch the body of the event a reaction points at, as a short single-line snippet. */
+    private fun fetchEventBodySnippet(
+        homeserver: String,
+        token: String,
+        roomId: String,
+        eventId: String,
+        maxLength: Int = 60,
+    ): String {
+        val obj = fetchJson(
+            "$homeserver/_matrix/client/v3/rooms/${urlEncode(roomId)}/event/${urlEncode(eventId)}",
+            token,
+        ) ?: return ""
+        val content = obj.optJSONObject("content") ?: return ""
+        val rawBody = content.optString("body")
+        if (rawBody.isBlank()) return ""
+        val trimmed = rawBody.replace(Regex("\\s+"), " ").trim()
+        return if (trimmed.length > maxLength) trimmed.substring(0, maxLength) + "…" else trimmed
     }
 
     private fun resolveProfile(mxid: String, homeserver: String, token: String): UserProfile {
@@ -1160,6 +1217,25 @@ class MatrixSyncService : Service() {
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to decode notification icon: ${e.message}")
+                null
+            }
+        }
+
+        /** Render a reaction emoji to a bitmap so it can be used as the notification icon. */
+        fun renderEmojiBitmap(emoji: String): Bitmap? {
+            return try {
+                val size = 128
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bitmap)
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+                paint.textSize = size * 0.7f
+                paint.textAlign = Paint.Align.CENTER
+                val fontMetrics = paint.fontMetrics
+                val y = size / 2f - (fontMetrics.ascent + fontMetrics.descent) / 2f
+                canvas.drawText(emoji, size / 2f, y, paint)
+                bitmap
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to render emoji icon: ${e.message}")
                 null
             }
         }
