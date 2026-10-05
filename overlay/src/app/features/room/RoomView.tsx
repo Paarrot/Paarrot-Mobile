@@ -106,7 +106,7 @@ export function RoomView({ room, eventId }: { room: Room; eventId?: string }) {
   );
 
   const flushComposer = immersive;
-  const composerPadding = flushComposer ? '0' : `0 ${config.space.S400}`;
+  const composerPadding = '0';
   const showHeader = !immersive;
 
   return (

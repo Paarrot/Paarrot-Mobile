@@ -6,16 +6,8 @@ export const Editor = style([
   {
     backgroundColor: color.SurfaceVariant.Container,
     color: color.SurfaceVariant.OnContainer,
-    boxShadow: `inset 0 0 0 ${config.borderWidth.B300} ${color.SurfaceVariant.ContainerLine}`,
-    borderRadius: config.radii.R400,
+    borderTop: `${config.borderWidth.B300} solid ${color.SurfaceVariant.ContainerLine}`,
     overflow: 'hidden',
-    selectors: {
-      // Keyboard-flush dock: only a top edge so the input can sit on the IME.
-      '[data-composer-flush="true"] &': {
-        borderRadius: 0,
-        boxShadow: `inset 0 ${config.borderWidth.B300} 0 0 ${color.SurfaceVariant.ContainerLine}`,
-      },
-    },
   },
 ]);
 
