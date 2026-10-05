@@ -384,21 +384,28 @@ class MatrixSyncService : Service() {
 
                     val content = event.optJSONObject("content") ?: JSONObject()
                     val encrypted = eventType == "m.room.encrypted"
+                    val msgtype = content.optString("msgtype")
+                    val rawBody = content.optString("body")
                     val body = when {
                         encrypted -> "Encrypted message"
                         eventType == "m.sticker" -> "Sticker"
-                        else -> {
-                            val msgtype = content.optString("msgtype")
-                            val rawBody = content.optString("body")
-                            when (msgtype) {
-                                "m.image" -> "Photo"
-                                "m.video" -> rawBody.ifBlank { "Video" }
-                                "m.audio" -> rawBody.ifBlank { "Audio" }
-                                "m.file" -> rawBody.ifBlank { "File" }
-                                else -> rawBody.takeIf { it.isNotBlank() }
-                            }
+                        else -> when (msgtype) {
+                            "m.image" -> "Photo"
+                            "m.video" -> rawBody.ifBlank { "Video" }
+                            "m.audio" -> rawBody.ifBlank { "Audio" }
+                            "m.file" -> rawBody.ifBlank { "File" }
+                            else -> rawBody.takeIf { it.isNotBlank() }
                         }
                     } ?: continue
+
+                    // Fetch an inline preview for image/sticker events. Plaintext only —
+                    // encrypted media can't be decrypted inside the raw-sync listener.
+                    val inlineImage =
+                        if (!encrypted && (msgtype == "m.image" || eventType == "m.sticker")) {
+                            resolveInlineImage(content, homeserver, token)
+                        } else {
+                            null
+                        }
 
                     val profile = try {
                         resolveProfile(sender, homeserver, token)
@@ -414,7 +421,7 @@ class MatrixSyncService : Service() {
                         profile.displayName,
                         body,
                         profile.avatar,
-                        null,
+                        inlineImage,
                         resolveGroupInfo(roomId, notifyCtx),
                     )
                     notifiedForRoom = true
@@ -676,6 +683,37 @@ class MatrixSyncService : Service() {
             Log.w(TAG, "Failed to download bitmap from $urlString: ${e.message}")
             null
         }
+    }
+
+    /**
+     * Resolve an inline preview bitmap for an image/sticker event content.
+     * Prefers a small thumbnail (keeps the notification light), falling back to the
+     * full download. Only works for plaintext events — encrypted media can't be
+     * decrypted inside the raw-sync listener.
+     */
+    private fun resolveInlineImage(
+        content: JSONObject,
+        homeserver: String,
+        token: String,
+    ): Bitmap? {
+        val info = content.optJSONObject("info")
+        val thumbnailMxc =
+            info?.optString("thumbnail_url").takeIf { it.startsWith("mxc://") }
+                ?: info?.optJSONObject("thumbnail_file")?.optString("url").takeIf { it.startsWith("mxc://") }
+        if (thumbnailMxc != null) {
+            for (url in mxcToThumbnailUrls(thumbnailMxc, homeserver, 512)) {
+                downloadBitmap(url, token)?.let { return it }
+            }
+        }
+        val fullMxc =
+            content.optString("url").takeIf { it.startsWith("mxc://") }
+                ?: content.optJSONObject("file")?.optString("url").takeIf { it.startsWith("mxc://") }
+        if (fullMxc != null) {
+            for (url in mxcToDownloadUrls(fullMxc, homeserver)) {
+                downloadBitmap(url, token)?.let { return it }
+            }
+        }
+        return null
     }
 
     private data class NotificationGroupInfo(
