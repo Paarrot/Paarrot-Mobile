@@ -1,627 +1,191 @@
-import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 import type { IPusherRequest, MatrixClient } from 'matrix-js-sdk';
 
-type UnifiedPushStatus = {
+export type ListenerStatus = {
   running: boolean;
-  endpoint: string;
-  instance: string;
-  registered: boolean;
-  distributor: string;
-  distributors: string[] | string;
-  lastFailure?: string;
-  /** OEM App Boot / AUTO_START is blocking distributor broadcasts (e.g. TCL). */
-  autoStartBlocked?: boolean;
-};
-
-type ClearRoomNotificationsResult = {
-  cleared: boolean;
-};
-
-type UnifiedPushEndpointEvent = {
-  endpoint: string;
-  previousEndpoint: string;
-  instance: string;
-};
-
-type UnifiedPushUnregisteredEvent = {
-  previousEndpoint: string;
-  instance: string;
-};
-
-type UnifiedPushRegistrationFailedEvent = {
-  reason: string;
-  instance: string;
+  listening: boolean;
+  batteryIgnored: boolean;
+  notificationsAllowed?: boolean;
+  error?: string;
 };
 
 interface MatrixBackgroundSyncPlugin {
-  /** Persist credentials and request UnifiedPush registration. */
   start(options: {
     homeserverUrl: string;
     accessToken: string;
     userId: string;
     deviceId: string;
-  }): Promise<void>;
-  /** Trigger a one-shot fetch as if a push ping arrived. */
+  }): Promise<{ batteryIgnored?: boolean }>;
   triggerPing(options: { reason?: string }): Promise<void>;
-  /** Re-open distributor setup flow and retry registration. */
-  requestDistributorSetup(): Promise<{ success: boolean }>;
-  /** Stop any in-flight fetch, clear credentials, and unregister UnifiedPush. */
   stop(): Promise<void>;
-  /**
-   * Notify the service whether the app UI is visible.
-   * When foreground is true, the service suppresses native notifications
-   * because the JS layer handles them via LocalNotifications.
-   */
   setAppForeground(options: { foreground: boolean }): Promise<void>;
-  /** Returns fetch state and current UnifiedPush registration details. */
-  getStatus(): Promise<UnifiedPushStatus>;
-  /** Native Matrix gateway discovery for a UnifiedPush endpoint (avoids WebView CORS). */
-  resolveUnifiedPushGateway(options: { endpoint: string }): Promise<{ gatewayUrl: string }>;
-  /** Cancel native tray notifications posted for a Matrix room. */
-  clearRoomNotifications(options: { roomId: string }): Promise<ClearRoomNotificationsResult>;
-  /**
-   * Persist room → space/group metadata so background notifications can nest
-   * under Direct messages / Space name / Home.
-   */
+  getStatus(): Promise<ListenerStatus>;
+  requestBatteryExemption(): Promise<{ ignored: boolean }>;
+  getPendingNotificationNav(): Promise<NotificationNavTarget>;
+  clearRoomNotifications(options: { roomId: string }): Promise<void>;
   setNotificationGroups(options: {
-    rooms: Record<
-      string,
-      { groupId: string; groupName: string; roomName: string; kind: string }
-    >;
-  }): Promise<{ success: boolean }>;
-  /** Post a message notification with optional avatar (base64) from the JS layer. */
-  showNotification(options: {
-    title?: string;
-    body?: string;
-    senderName?: string;
-    messageText?: string;
-    conversationTitle?: string;
-    path?: string;
-    roomId: string;
-    groupId: string;
-    groupName: string;
-    kind: string;
-    largeIconBase64?: string;
-    bigPictureBase64?: string;
-  }): Promise<{ shown: boolean }>;
-  /** Pending navigation target from a native notification tap. */
-  getPendingNotificationNav(): Promise<{ path?: string | null; roomId?: string | null }>;
-  addListener(
+    rooms: Record<string, { groupId: string; groupName: string; roomName: string; kind: string }>;
+  }): Promise<void>;
+  showNotification(options: NativeNotificationOptions): Promise<{ shown: boolean }>;
+  addListener?(
     eventName: 'notificationOpened',
-    listenerFunc: (event: { path?: string; roomId?: string }) => void
-  ): Promise<PluginListenerHandle>;
-  addListener(
-    eventName: 'unifiedPushNewEndpoint',
-    listenerFunc: (event: UnifiedPushEndpointEvent) => void
-  ): Promise<PluginListenerHandle>;
-  addListener(
-    eventName: 'unifiedPushUnregistered',
-    listenerFunc: (event: UnifiedPushUnregisteredEvent) => void
-  ): Promise<PluginListenerHandle>;
-  addListener(
-    eventName: 'unifiedPushRegistrationFailed',
-    listenerFunc: (event: UnifiedPushRegistrationFailedEvent) => void
-  ): Promise<PluginListenerHandle>;
+    listener: (target: NotificationNavTarget) => void
+  ): Promise<{ remove: () => void }>;
 }
 
-type StoredPusherState = {
-  endpoint: string;
-  appId: string;
+type CapacitorGlobal = {
+  isNativePlatform?: () => boolean;
+  getPlatform?: () => string;
+  isPluginAvailable?: (name: string) => boolean;
+  registerPlugin?: <T>(name: string) => T;
+  nativePromise?: (plugin: string, method: string, options?: unknown) => Promise<unknown>;
+  Plugins?: Record<string, Partial<MatrixBackgroundSyncPlugin> | undefined>;
 };
 
-const MatrixBackgroundSync = registerPlugin<MatrixBackgroundSyncPlugin>('MatrixBackgroundSync');
-const DEFAULT_UNIFIED_PUSH_GATEWAY = 'https://matrix.gateway.unifiedpush.org/_matrix/push/v1/notify';
-const PUSHER_APP_ID_BASE = 'com.paarrot.app.android';
-const PUSHER_STORAGE_PREFIX = 'paarrot.unifiedpush';
+const PLUGIN = 'MatrixBackgroundSync';
+const LEGACY_PUSHER_APP_ID = 'com.paarrot.app.android';
+const LEGACY_PUSHER_STORAGE_PREFIX = 'paarrot.unifiedpush';
+
+const capacitor = (): CapacitorGlobal | undefined =>
+  (window as typeof window & { Capacitor?: CapacitorGlobal }).Capacitor;
 
 /** Returns true when the current platform is Android Capacitor. */
-export const isBackgroundSyncSupported = (): boolean =>
-  Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android';
-
-const getStoredPusherKey = (userId: string | null, deviceId: string | null): string =>
-  `${PUSHER_STORAGE_PREFIX}:${userId ?? 'unknown'}:${deviceId ?? 'unknown'}`;
-
-const buildPusherAppId = (deviceId: string | null): string => {
-  const raw = deviceId ? `${PUSHER_APP_ID_BASE}.${deviceId}` : PUSHER_APP_ID_BASE;
-  return raw.length > 64 ? raw.slice(0, 64) : raw;
+export const isBackgroundSyncSupported = (): boolean => {
+  const cap = capacitor();
+  return Boolean(cap?.isNativePlatform?.() && cap.getPlatform?.() === 'android');
 };
 
-const loadStoredPusherState = (
-  userId: string | null,
-  deviceId: string | null
-): StoredPusherState | undefined => {
-  if (typeof window === 'undefined' || !window.localStorage) return undefined;
-
-  const raw = window.localStorage.getItem(getStoredPusherKey(userId, deviceId));
-  if (!raw) return undefined;
-
-  try {
-    return JSON.parse(raw) as StoredPusherState;
-  } catch {
-    return undefined;
+const waitForBridge = async (tries = 50): Promise<CapacitorGlobal> => {
+  for (let i = 0; i < tries; i += 1) {
+    const cap = capacitor();
+    if (
+      cap?.isNativePlatform?.() &&
+      (cap.Plugins?.[PLUGIN] || cap.nativePromise || cap.registerPlugin)
+    ) {
+      return cap;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
   }
+  throw new Error('Capacitor bridge did not become ready');
 };
 
-const saveStoredPusherState = (
-  userId: string | null,
-  deviceId: string | null,
-  state: StoredPusherState
-): void => {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(getStoredPusherKey(userId, deviceId), JSON.stringify(state));
-};
-
-const clearStoredPusherState = (userId: string | null, deviceId: string | null): void => {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.removeItem(getStoredPusherKey(userId, deviceId));
-};
-
-const normalizeDistributors = (raw: UnifiedPushStatus['distributors']): string[] => {
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw !== 'string') return [];
-
-  const trimmed = raw.trim();
-  if (!trimmed || trimmed === '[]') return [];
-
-  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-    return trimmed
-      .slice(1, -1)
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter(Boolean);
+/** Android injects plugins on Capacitor.Plugins — registerPlugin is often missing. */
+const plugin = async (): Promise<MatrixBackgroundSyncPlugin> => {
+  const cap = await waitForBridge();
+  const existing = cap.Plugins?.[PLUGIN];
+  if (existing?.getStatus && existing.start) {
+    return existing as MatrixBackgroundSyncPlugin;
   }
 
-  return [trimmed];
-};
-
-const resolveUnifiedPushGateway = async (endpoint: string): Promise<string> => {
-  // Prefer native HTTP — ntfy/Matrix gateway responses omit CORS headers, so
-  // WebView fetch fails with TypeError: Failed to fetch and wrongly falls back.
-  try {
-    const result = await MatrixBackgroundSync.resolveUnifiedPushGateway({ endpoint });
-    if (result?.gatewayUrl) return result.gatewayUrl;
-  } catch (err) {
-    console.warn('[BackgroundSync] Native UnifiedPush gateway discovery failed:', err);
-  }
-
-  try {
-    const discoveryUrl = new URL(endpoint);
-    discoveryUrl.pathname = '/_matrix/push/v1/notify';
-    discoveryUrl.search = '';
-
-    const response = await fetch(discoveryUrl.toString(), { method: 'GET' });
-    if (!response.ok) return DEFAULT_UNIFIED_PUSH_GATEWAY;
-
-    const body = (await response.json()) as {
-      gateway?: string;
-      unifiedpush?: { gateway?: string };
+  if (typeof cap.nativePromise === 'function') {
+    const call = <T>(method: string, options?: unknown) =>
+      cap.nativePromise!(PLUGIN, method, options ?? {}) as Promise<T>;
+    return {
+      start: (options) => call('start', options),
+      triggerPing: (options) => call('triggerPing', options),
+      stop: () => call('stop'),
+      setAppForeground: (options) => call('setAppForeground', options),
+      getStatus: () => call('getStatus'),
+      requestBatteryExemption: () => call('requestBatteryExemption'),
+      getPendingNotificationNav: () => call('getPendingNotificationNav'),
+      clearRoomNotifications: (options) => call('clearRoomNotifications', options),
+      setNotificationGroups: (options) => call('setNotificationGroups', options),
+      showNotification: (options) => call('showNotification', options),
     };
+  }
 
-    if (body.gateway === 'matrix' || body.unifiedpush?.gateway === 'matrix') {
-      return discoveryUrl.toString();
+  if (cap.registerPlugin) {
+    return cap.registerPlugin<MatrixBackgroundSyncPlugin>(PLUGIN);
+  }
+
+  throw new Error('MatrixBackgroundSync is unavailable on this Capacitor bridge');
+};
+
+/** Keep Paarrot's native message listener running without a push distributor. */
+export const startBackgroundSync = async (mx: MatrixClient): Promise<void> => {
+  if (!isBackgroundSyncSupported()) return;
+
+  const homeserverUrl = mx.getHomeserverUrl();
+  const accessToken = mx.getAccessToken();
+  const userId = mx.getUserId();
+  const deviceId = mx.getDeviceId();
+  if (!homeserverUrl || !accessToken || !userId) return;
+
+  const legacyAppId = `${LEGACY_PUSHER_APP_ID}${deviceId ? `.${deviceId}` : ''}`.slice(0, 64);
+  try {
+    const pushers = (await mx.getPushers())?.pushers ?? [];
+    for (const pusher of pushers) {
+      if (pusher.kind === 'http' && pusher.app_id === legacyAppId) {
+        await mx.setPusher({
+          pushkey: pusher.pushkey,
+          app_id: pusher.app_id,
+          kind: null,
+        } as unknown as IPusherRequest);
+      }
     }
   } catch (err) {
-    console.warn('[BackgroundSync] UnifiedPush gateway discovery failed:', err);
+    console.warn('[BackgroundSync] Failed to remove the previous UnifiedPush pusher:', err);
+  }
+  if (typeof window !== 'undefined' && window.localStorage) {
+    window.localStorage.removeItem(
+      `${LEGACY_PUSHER_STORAGE_PREFIX}:${userId}:${deviceId ?? 'unknown'}`
+    );
   }
 
-  return DEFAULT_UNIFIED_PUSH_GATEWAY;
+  await (await plugin()).start({
+    homeserverUrl,
+    accessToken,
+    userId,
+    deviceId: deviceId ?? '',
+  });
 };
 
-class AndroidUnifiedPushManager {
-  private client: MatrixClient | undefined;
-
-  private listenerHandles: PluginListenerHandle[] = [];
-
-  private listenersReady = false;
-
-  private distributorSetupAttempted = false;
-
-  private distributorPromptShown = false;
-
-  /** Start native UnifiedPush registration and synchronize the Matrix pusher. */
-  async start(mx: MatrixClient): Promise<void> {
-    console.log('[BackgroundSync] start() called, platform:', Capacitor.getPlatform(), 'isNative:', Capacitor.isNativePlatform());
-    
-    if (!isBackgroundSyncSupported()) {
-      console.log('[BackgroundSync] Background sync not supported on this platform');
-      return;
-    }
-
-    const homeserverUrl = mx.getHomeserverUrl();
-    const accessToken = mx.getAccessToken();
-    const userId = mx.getUserId();
-    const deviceId = mx.getDeviceId();
-
-    console.log('[BackgroundSync] Credentials check:', { userId, deviceId, hasToken: !!accessToken, hasUrl: !!homeserverUrl });
-
-    if (!homeserverUrl || !accessToken || !userId) {
-      console.warn('[BackgroundSync] Missing credentials, not starting');
-      return;
-    }
-
-    this.client = mx;
-    this.distributorSetupAttempted = false;
-    this.distributorPromptShown = false;
-    await this.ensureListeners();
-
-    try {
-      console.log('[BackgroundSync] Calling plugin.start()...');
-      await MatrixBackgroundSync.start({
-        homeserverUrl,
-        accessToken,
-        userId,
-        deviceId: deviceId ?? '',
-      });
-      console.log('[BackgroundSync] plugin.start() completed');
-    } catch (err) {
-      console.error('[BackgroundSync] plugin.start() failed:', err);
-      throw err;
-    }
-
-    await this.syncExistingEndpoint();
-    await this.ensureDistributorPromptFromStatus();
-    console.log('[BackgroundSync] UnifiedPush registration requested');
-  }
-
-  /** Stop native UnifiedPush integration and remove the Matrix pusher for this device. */
-  async stop(): Promise<void> {
-    if (!isBackgroundSyncSupported()) return;
-
-    const client = this.client;
-    if (client) {
-      const deviceId = client.getDeviceId();
-      const userId = client.getUserId();
-      const status = await this.safeGetStatus();
-      const stored = loadStoredPusherState(userId, deviceId);
-      const endpoint = status?.endpoint || stored?.endpoint;
-      const appId = stored?.appId ?? buildPusherAppId(deviceId);
-
-      if (endpoint) {
-        await this.removePusher(client, endpoint, appId);
-      }
-      clearStoredPusherState(userId, deviceId);
-    }
-
-    await MatrixBackgroundSync.stop();
-    await this.disposeListeners();
-    this.client = undefined;
-    console.log('[BackgroundSync] UnifiedPush stopped');
-  }
-
-  /** Update the Matrix pusher when a new native endpoint is published. */
-  private async handleNewEndpoint(event: UnifiedPushEndpointEvent): Promise<void> {
-    const client = this.client;
-    if (!client) return;
-
-    if (event.previousEndpoint) {
-      await this.removePusher(client, event.previousEndpoint);
-    }
-
-    await this.upsertPusher(client, event.endpoint);
-  }
-
-  /** Remove the Matrix pusher when UnifiedPush unregisters this instance. */
-  private async handleUnregistered(event: UnifiedPushUnregisteredEvent): Promise<void> {
-    const client = this.client;
-    if (!client) return;
-
-    const stored = loadStoredPusherState(client.getUserId(), client.getDeviceId());
-    const endpoint = event.previousEndpoint || stored?.endpoint;
-    const appId = stored?.appId ?? buildPusherAppId(client.getDeviceId());
-
-    if (endpoint) {
-      await this.removePusher(client, endpoint, appId);
-    }
-
-    clearStoredPusherState(client.getUserId(), client.getDeviceId());
-  }
-
-  /** Log native registration failures so the missing distributor path is visible. */
-  private handleRegistrationFailed(event: UnifiedPushRegistrationFailedEvent): void {
-    console.warn('[BackgroundSync] UnifiedPush registration failed:', event.reason);
-
-    if (event.reason !== 'ACTION_REQUIRED' || this.distributorSetupAttempted) {
-      return;
-    }
-
-    this.distributorSetupAttempted = true;
-    void this.tryRequestDistributorSetup();
-  }
-
-  /** Re-opens distributor selection once after ACTION_REQUIRED and logs actionable status. */
-  private async tryRequestDistributorSetup(): Promise<void> {
-    try {
-      const setupResult = await MatrixBackgroundSync.requestDistributorSetup();
-      console.warn('[BackgroundSync] requestDistributorSetup result:', setupResult);
-      const status = await this.safeGetStatus();
-      console.warn('[BackgroundSync] UnifiedPush status after setup attempt:', status);
-      const distributors = normalizeDistributors(status?.distributors ?? []);
-      if (distributors.length === 0) {
-        console.error(
-          '[BackgroundSync] No UnifiedPush distributor installed. Install one (for example ntfy) to enable Android background notifications.'
-        );
-        this.showNoDistributorPrompt();
-      }
-    } catch (err) {
-      console.warn('[BackgroundSync] requestDistributorSetup failed:', err);
-    }
-  }
-
-  /** Fallback check so users still get prompted even when ACTION_REQUIRED event is missed. */
-  private async ensureDistributorPromptFromStatus(): Promise<void> {
-    const status = await this.safeGetStatus();
-    if (!status) return;
-
-    const distributors = normalizeDistributors(status.distributors);
-    if (!status.registered && distributors.length === 0) {
-      console.error(
-        '[BackgroundSync] No UnifiedPush distributor installed. Install one (for example ntfy) to enable Android background notifications.'
-      );
-      this.showNoDistributorPrompt();
-    }
-  }
-
-  /** Show a one-time actionable prompt when no distributor app is installed. */
-  private showNoDistributorPrompt(): void {
-    if (this.distributorPromptShown) return;
-    this.distributorPromptShown = true;
-
-    const message =
-      'Android background notifications need a UnifiedPush distributor app. Install one (for example ntfy), then reopen Paarrot.';
-    const docsUrl = 'https://unifiedpush.org/users/distributors/';
-
-    if (typeof window === 'undefined') return;
-
-    try {
-      const openDocs = window.confirm(`${message}\n\nOpen distributor list now?`);
-      if (openDocs) {
-        window.open(docsUrl, '_blank', 'noopener,noreferrer');
-      }
-    } catch {
-      window.alert(message);
-    }
-  }
-
-  /** Install plugin listeners once for the active Matrix client. */
-  private async ensureListeners(): Promise<void> {
-    if (this.listenersReady) return;
-
-    this.listenerHandles = [
-      await MatrixBackgroundSync.addListener('unifiedPushNewEndpoint', (event) => {
-        void this.handleNewEndpoint(event).catch((err) => {
-          console.error('[BackgroundSync] handleNewEndpoint failed:', err);
-        });
-      }),
-      await MatrixBackgroundSync.addListener('unifiedPushUnregistered', (event) => {
-        void this.handleUnregistered(event);
-      }),
-      await MatrixBackgroundSync.addListener('unifiedPushRegistrationFailed', (event) => {
-        this.handleRegistrationFailed(event);
-      }),
-    ];
-    this.listenersReady = true;
-  }
-
-  /** Remove all plugin listeners when the manager stops. */
-  private async disposeListeners(): Promise<void> {
-    await Promise.all(this.listenerHandles.map((handle) => handle.remove()));
-    this.listenerHandles = [];
-    this.listenersReady = false;
-  }
-
-  /** Reconcile an already-persisted native endpoint after app startup. */
-  private async syncExistingEndpoint(): Promise<void> {
-    const client = this.client;
-    if (!client) return;
-
-    const status = await this.safeGetStatus();
-    console.log('[BackgroundSync] Native status before pusher sync:', status);
-    if (status?.registered && status.endpoint) {
-      await this.upsertPusher(client, status.endpoint);
-    }
-  }
-
-  /** Create or refresh the Matrix HTTP pusher for the current device. */
-  private async upsertPusher(mx: MatrixClient, endpoint: string): Promise<void> {
-    const deviceId = mx.getDeviceId();
-    const userId = mx.getUserId();
-    const appId = buildPusherAppId(deviceId);
-    const gatewayUrl = await resolveUnifiedPushGateway(endpoint);
-
-    console.log('[BackgroundSync] Upserting Matrix pusher', {
-      appId,
-      endpoint,
-      gatewayUrl,
-      deviceId,
-      userId,
-    });
-
-    try {
-      await mx.setPusher({
-        kind: 'http',
-        app_id: appId,
-        pushkey: endpoint,
-        app_display_name: 'Paarrot',
-        device_display_name: deviceId ?? 'Android',
-        lang: 'en',
-        data: {
-          url: gatewayUrl,
-          format: 'event_id_only',
-        },
-        append: false,
-        device_id: deviceId ?? undefined,
-      } as unknown as IPusherRequest);
-
-      const pushers = (await mx.getPushers())?.pushers ?? [];
-      const thisPusher = pushers.find((p) => p.pushkey === endpoint && p.app_id === appId);
-      console.log('[BackgroundSync] Matrix pusher upserted successfully', {
-        totalPushers: pushers.length,
-        foundThisPusher: Boolean(thisPusher),
-      });
-    } catch (err) {
-      console.error('[BackgroundSync] Matrix pusher upsert failed:', err);
-      throw err;
-    }
-
-    saveStoredPusherState(userId, deviceId, { endpoint, appId });
-  }
-
-  /** Remove a previously-registered Matrix HTTP pusher for this device. */
-  private async removePusher(
-    mx: MatrixClient,
-    endpoint: string,
-    appId = buildPusherAppId(mx.getDeviceId())
-  ): Promise<void> {
-    try {
-      await mx.setPusher({
-        pushkey: endpoint,
-        app_id: appId,
-        kind: null,
-      } as unknown as IPusherRequest);
-    } catch (err) {
-      console.warn('[BackgroundSync] Failed to remove UnifiedPush pusher:', err);
-    }
-  }
-
-  /** Read native registration state without failing the caller. */
-  private async safeGetStatus(): Promise<UnifiedPushStatus | undefined> {
-    try {
-      return await MatrixBackgroundSync.getStatus();
-    } catch (err) {
-      console.warn('[BackgroundSync] Failed to read UnifiedPush status:', err);
-      return undefined;
-    }
-  }
-}
-
-const unifiedPushManager = new AndroidUnifiedPushManager();
-
-/** Start native UnifiedPush registration and sync the Matrix pusher. */
-export const startBackgroundSync = async (mx: MatrixClient): Promise<void> => {
-  await unifiedPushManager.start(mx);
+/** Stop the listener and drop saved credentials. Call this on logout. */
+export const stopBackgroundSync = async (): Promise<void> => {
+  if (!isBackgroundSyncSupported()) return;
+  await (await plugin()).stop();
 };
 
-/**
- * Manually triggers a one-shot native fetch.
- * Useful for diagnostics and bridge testing.
- */
+/** Ask the listener to sync now. */
 export const triggerBackgroundSyncPing = async (reason?: string): Promise<void> => {
   if (!isBackgroundSyncSupported()) return;
-
-  try {
-    await MatrixBackgroundSync.triggerPing({ reason });
-  } catch (err) {
-    console.warn('[BackgroundSync] triggerPing failed:', err);
-  }
+  await (await plugin()).triggerPing({ reason });
 };
 
-/** Stop UnifiedPush integration and remove the Matrix pusher for this session. */
-export const stopBackgroundSync = async (): Promise<void> => {
-  await unifiedPushManager.stop();
-};
-
-/**
- * Tells the native service whether the app UI is in the foreground.
- * Call when document visibility changes so the service can suppress
- * duplicate notifications while the JS layer is active.
- * @param foreground true if the WebView UI is currently visible
- */
+/** Tell the listener whether the chat UI is on screen. */
 export const setAppForegroundState = async (foreground: boolean): Promise<void> => {
   if (!isBackgroundSyncSupported()) return;
-
-  try {
-    await MatrixBackgroundSync.setAppForeground({ foreground });
-  } catch (err) {
-    console.warn('[BackgroundSync] setAppForeground failed:', err);
-  }
+  await (await plugin()).setAppForeground({ foreground });
 };
 
-/**
- * Re-opens the UnifiedPush distributor selection dialog.
- * Allows users to re-select or change their push notification distributor without terminal access.
- * Useful when the current endpoint becomes unavailable.
- * Waits briefly for the distributor to return an endpoint so the settings UI can refresh accurately.
- */
-export const requestResetPushRegistration = async (): Promise<{ success: boolean }> => {
-  if (!isBackgroundSyncSupported()) {
-    console.warn('[BackgroundSync] Background sync not supported on this platform');
-    return { success: false };
-  }
-
-  try {
-    const result = await MatrixBackgroundSync.requestDistributorSetup();
-    console.log('[BackgroundSync] requestDistributorSetup completed:', result);
-    if (!result?.success) return { success: false };
-
-    // Endpoint arrives asynchronously from the distributor after register().
-    for (let i = 0; i < 40; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      const status = await getBackgroundSyncStatus();
-      if (status?.registered && status.endpoint) {
-        return { success: true };
-      }
-      if (status?.lastFailure) {
-        console.warn('[BackgroundSync] Registration failed while waiting:', status.lastFailure);
-        return { success: false };
-      }
-    }
-
-    console.warn('[BackgroundSync] Distributor selected but no endpoint received in time');
-    return { success: false };
-  } catch (err) {
-    console.error('[BackgroundSync] requestDistributorSetup failed:', err);
-    return { success: false };
-  }
+/** Ask Android to leave the listener out of battery optimization. */
+export const requestBatteryExemption = async (): Promise<{ ignored: boolean }> => {
+  if (!isBackgroundSyncSupported()) return { ignored: false };
+  return (await plugin()).requestBatteryExemption();
 };
 
-/** Returns the current native UnifiedPush status, or undefined if unavailable. */
-export const getBackgroundSyncStatus = async (): Promise<UnifiedPushStatus | undefined> => {
+/** Returns listener and battery-exemption state. */
+export const getBackgroundSyncStatus = async (): Promise<ListenerStatus | undefined> => {
   if (!isBackgroundSyncSupported()) return undefined;
   try {
-    return await MatrixBackgroundSync.getStatus();
+    return await (await plugin()).getStatus();
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.warn('[BackgroundSync] getStatus failed:', err);
-    return undefined;
+    return {
+      running: false,
+      listening: false,
+      batteryIgnored: false,
+      error: message,
+    };
   }
 };
 
-/**
- * Clears native (MatrixSyncService) tray notifications for a room after it is read.
- * No-op when background sync / native Android is unavailable.
- */
-export const clearNativeRoomNotifications = async (roomId: string): Promise<void> => {
-  if (!isBackgroundSyncSupported() || !roomId) return;
-
-  try {
-    await MatrixBackgroundSync.clearRoomNotifications({ roomId });
-  } catch (err) {
-    console.warn('[BackgroundSync] clearRoomNotifications failed:', err);
-  }
+export type NotificationNavTarget = {
+  path?: string | null;
+  roomId?: string | null;
 };
 
-/**
- * Syncs space/DM grouping metadata to the native layer for background notifications.
- */
-export const syncNotificationGroupMap = async (
-  rooms: Record<
-    string,
-    { groupId: string; groupName: string; roomName: string; kind: string }
-  >
-): Promise<void> => {
-  if (!isBackgroundSyncSupported()) return;
-
-  try {
-    await MatrixBackgroundSync.setNotificationGroups({ rooms });
-  } catch (err) {
-    console.warn('[BackgroundSync] setNotificationGroups failed:', err);
-  }
-};
-
-/**
- * Posts a native tray notification (supports dynamic/authenticated avatar icons).
- * Prefer this over Capacitor LocalNotifications on Android.
- */
-export const showNativeNotification = async (options: {
+export type NativeNotificationOptions = {
   title?: string;
   body?: string;
   senderName?: string;
@@ -634,41 +198,122 @@ export const showNativeNotification = async (options: {
   kind: string;
   largeIconBase64?: string;
   bigPictureBase64?: string;
-}): Promise<boolean> => {
-  if (!isBackgroundSyncSupported()) return false;
+};
 
+/** Read a tray-tap target that opened the app before JS listeners attached. */
+export const getPendingNotificationNav = async (): Promise<NotificationNavTarget | undefined> => {
+  if (!isBackgroundSyncSupported()) return undefined;
   try {
-    await MatrixBackgroundSync.showNotification(options);
-    return true;
+    const cap = await waitForBridge();
+    if (typeof cap.nativePromise === 'function') {
+      return (await cap.nativePromise(
+        PLUGIN,
+        'getPendingNotificationNav',
+        {}
+      )) as NotificationNavTarget;
+    }
+    const existing = cap.Plugins?.[PLUGIN] as
+      | { getPendingNotificationNav?: () => Promise<NotificationNavTarget> }
+      | undefined;
+    if (existing?.getPendingNotificationNav) {
+      return existing.getPendingNotificationNav();
+    }
+  } catch (err) {
+    console.warn('[BackgroundSync] getPendingNotificationNav failed:', err);
+  }
+  return undefined;
+};
+
+/** Subscribe to tray notification taps while the app is already running. */
+export const subscribeNotificationOpened = async (
+  callback: (target: NotificationNavTarget) => void
+): Promise<() => void> => {
+  if (!isBackgroundSyncSupported()) return () => undefined;
+  try {
+    const cap = await waitForBridge();
+    const existing = cap.Plugins?.[PLUGIN] as
+      | {
+          addListener?: (
+            event: string,
+            cb: (data: NotificationNavTarget) => void
+          ) => Promise<{ remove: () => void }> | { remove: () => void };
+        }
+      | undefined;
+    const nativePlugin =
+      existing?.addListener
+        ? existing
+        : cap.registerPlugin?.<MatrixBackgroundSyncPlugin>(PLUGIN);
+    if (!nativePlugin?.addListener) return () => undefined;
+    const handle = await nativePlugin.addListener('notificationOpened', callback);
+    return () => {
+      void handle.remove();
+    };
+  } catch (err) {
+    console.warn('[BackgroundSync] subscribeNotificationOpened failed:', err);
+    return () => undefined;
+  }
+};
+
+/** Dismiss native tray notifications for a room after it is opened / marked read. */
+export const clearRoomNotifications = async (roomId: string): Promise<void> => {
+  if (!isBackgroundSyncSupported() || !roomId) return;
+  try {
+    const cap = await waitForBridge();
+    if (typeof cap.nativePromise === 'function') {
+      await cap.nativePromise(PLUGIN, 'clearRoomNotifications', { roomId });
+      return;
+    }
+    const existing = cap.Plugins?.[PLUGIN] as
+      | { clearRoomNotifications?: (o: { roomId: string }) => Promise<void> }
+      | undefined;
+    await existing?.clearRoomNotifications?.({ roomId });
+  } catch (err) {
+    console.warn('[BackgroundSync] clearRoomNotifications failed:', err);
+  }
+};
+
+/** Compatibility name used by the notification utility layer. */
+export const clearNativeRoomNotifications = clearRoomNotifications;
+
+/** Keep background notification grouping in sync with the active room list. */
+export const syncNotificationGroupMap = async (
+  rooms: Record<string, { groupId: string; groupName: string; roomName: string; kind: string }>
+): Promise<void> => {
+  if (!isBackgroundSyncSupported()) return;
+  try {
+    const cap = await waitForBridge();
+    if (typeof cap.nativePromise === 'function') {
+      await cap.nativePromise(PLUGIN, 'setNotificationGroups', { rooms });
+      return;
+    }
+    const existing = cap.Plugins?.[PLUGIN] as
+      | { setNotificationGroups?: (options: { rooms: typeof rooms }) => Promise<void> }
+      | undefined;
+    await existing?.setNotificationGroups?.({ rooms });
+  } catch (err) {
+    console.warn('[BackgroundSync] setNotificationGroups failed:', err);
+  }
+};
+
+/** Post a notification using Android's native NotificationManager. */
+export const showNativeNotification = async (
+  options: NativeNotificationOptions
+): Promise<boolean> => {
+  if (!isBackgroundSyncSupported()) return false;
+  try {
+    const cap = await waitForBridge();
+    if (typeof cap.nativePromise === 'function') {
+      const result = (await cap.nativePromise(PLUGIN, 'showNotification', options)) as {
+        shown?: boolean;
+      };
+      return result.shown === true;
+    }
+    const existing = cap.Plugins?.[PLUGIN] as
+      | { showNotification?: (options: NativeNotificationOptions) => Promise<{ shown: boolean }> }
+      | undefined;
+    return (await existing?.showNotification?.(options))?.shown === true;
   } catch (err) {
     console.warn('[BackgroundSync] showNotification failed:', err);
     return false;
-  }
-};
-
-/** Consume a pending native notification navigation target, if any. */
-export const getPendingNotificationNav = async (): Promise<{
-  path?: string | null;
-  roomId?: string | null;
-}> => {
-  if (!isBackgroundSyncSupported()) return {};
-  try {
-    return await MatrixBackgroundSync.getPendingNotificationNav();
-  } catch (err) {
-    console.warn('[BackgroundSync] getPendingNotificationNav failed:', err);
-    return {};
-  }
-};
-
-/** Subscribe to native notification taps that open the app. */
-export const listenForNotificationOpens = async (
-  listener: (event: { path?: string; roomId?: string }) => void
-): Promise<PluginListenerHandle | undefined> => {
-  if (!isBackgroundSyncSupported()) return undefined;
-  try {
-    return await MatrixBackgroundSync.addListener('notificationOpened', listener);
-  } catch (err) {
-    console.warn('[BackgroundSync] notificationOpened listener failed:', err);
-    return undefined;
   }
 };

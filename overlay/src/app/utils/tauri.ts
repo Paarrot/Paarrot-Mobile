@@ -226,7 +226,7 @@ export const setupNotificationTapListener = async (onTap: (path: string) => void
     try {
       const {
         getPendingNotificationNav,
-        listenForNotificationOpens,
+        subscribeNotificationOpened,
       } = await import('./backgroundSync');
 
       const deliver = (path?: string | null, roomId?: string | null) => {
@@ -241,9 +241,9 @@ export const setupNotificationTapListener = async (onTap: (path: string) => void
       };
 
       const pending = await getPendingNotificationNav();
-      deliver(pending.path, pending.roomId);
+      deliver(pending?.path, pending?.roomId);
 
-      await listenForNotificationOpens((event) => {
+      await subscribeNotificationOpened((event) => {
         void focusWindow();
         deliver(event.path, event.roomId);
       });

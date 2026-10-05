@@ -1,7 +1,16 @@
 package com.paarrot.app
 
+import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -12,13 +21,12 @@ import com.getcapacitor.annotation.CapacitorPlugin
  * Capacitor plugin that controls [MatrixSyncService] from JS.
  *
  * JS API:
- * - `start({ homeserverUrl, accessToken, userId, deviceId })` — persist credentials and register UnifiedPush
- * - `triggerPing({ reason })` — force a one-shot fetch (for testing/manual wake)
- * - `stop()` — clear persisted credentials and unregister UnifiedPush
+ * - `start({ homeserverUrl, accessToken, userId, deviceId })` — persist credentials and keep the listener running
+ * - `triggerPing({ reason })` — make sure the listener is running
+ * - `stop()` — clear persisted credentials and stop the listener
  * - `setAppForeground({ foreground })` — tell the service whether the app UI is visible
- * - `getStatus()` — returns current fetch and UnifiedPush state
- * - `requestDistributorSetup()` — clear saved distributor and re-open OS picker
- * - `resolveUnifiedPushGateway({ endpoint })` — native Matrix gateway discovery
+ * - `getStatus()` — returns whether the listener is running and battery is unrestricted
+ * - `requestBatteryExemption()` — ask Android to leave the listener unrestricted
  * - `clearRoomNotifications({ roomId })` — dismiss native tray notifs for a room
  * - `setNotificationGroups({ rooms })` — persist space/DM grouping for tray nesting
  * - `showNotification({ title, body, roomId, groupId, groupName, kind, largeIconBase64 })`
@@ -26,13 +34,8 @@ import com.getcapacitor.annotation.CapacitorPlugin
 @CapacitorPlugin(name = "MatrixBackgroundSync")
 class SyncServicePlugin : Plugin() {
 
-    fun emitUnifiedPushEvent(eventName: String, payload: JSObject) {
-        notifyListeners(eventName, payload, true)
-    }
-
     override fun load() {
         super.load()
-        UnifiedPushManager.setPlugin(this)
         NotificationNavStore.plugin = this
         NotificationNavStore.handleIntent(activity?.intent)
     }
@@ -46,7 +49,6 @@ class SyncServicePlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
-        UnifiedPushManager.clearPlugin(this)
         if (NotificationNavStore.plugin === this) {
             NotificationNavStore.plugin = null
         }
@@ -71,7 +73,7 @@ class SyncServicePlugin : Plugin() {
         call.resolve(result)
     }
 
-    /** Persists Matrix credentials and starts UnifiedPush registration. */
+    /** Persists Matrix credentials and keeps the message listener in the foreground. */
     @PluginMethod
     fun start(call: PluginCall) {
         val homeserver = call.getString("homeserverUrl")
@@ -86,11 +88,13 @@ class SyncServicePlugin : Plugin() {
             .putString(MatrixSyncService.EXTRA_TOKEN, token)
             .putString(MatrixSyncService.EXTRA_USER_ID, userId)
             .putString(MatrixSyncService.EXTRA_DEVICE_ID, deviceId)
-            .apply()
+            .commit()
 
-        UnifiedPushManager.register(context, activity)
-
-        call.resolve()
+        askNotificationPermission()
+        MatrixSyncService.scheduleKeepAlive(context)
+        MatrixSyncService.requestSyncFetch(context, MatrixSyncService.MODE_LISTENER)
+        val ignored = askBatteryExemption(context, activity)
+        call.resolve(JSObject().put("batteryIgnored", ignored))
     }
 
     /** Manually triggers a one-shot sync fetch (mainly for diagnostics/testing). */
@@ -104,9 +108,9 @@ class SyncServicePlugin : Plugin() {
     /** Stops the sync service and erases persisted credentials. */
     @PluginMethod
     fun stop(call: PluginCall) {
+        MatrixSyncService.cancelKeepAlive(context)
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
         context.stopService(Intent(context, MatrixSyncService::class.java))
-        UnifiedPushManager.unregister(context)
         call.resolve()
     }
 
@@ -117,49 +121,40 @@ class SyncServicePlugin : Plugin() {
      */
     @PluginMethod
     fun setAppForeground(call: PluginCall) {
-        MatrixSyncService.appInForeground = call.getBoolean("foreground", false) ?: false
+        val foreground = call.getBoolean("foreground", false) ?: false
+        MatrixSyncService.setAppInForeground(context, foreground)
         call.resolve()
     }
 
     /** Returns whether the sync service is currently running. */
     @PluginMethod
     fun getStatus(call: PluginCall) {
-        val am = context.getSystemService(Context.ACTIVITY_SERVICE)
-            as android.app.ActivityManager
-        @Suppress("DEPRECATION")
-        val running = am.getRunningServices(Int.MAX_VALUE)
-            .any { it.service.className == MatrixSyncService::class.java.name }
-        val result = UnifiedPushManager.getStatus(context).apply { put("running", running) }
-        call.resolve(result)
-    }
-
-    /**
-     * Clears the saved UnifiedPush distributor and opens the OS default-distributor
-     * picker (`unifiedpush://link`), then re-registers on success.
-     */
-    @PluginMethod
-    fun requestDistributorSetup(call: PluginCall) {
-        val currentActivity = activity
-            ?: return call.reject("Activity required to select a UnifiedPush distributor")
-        UnifiedPushManager.requestDistributorSetup(context, currentActivity) { success ->
-            call.resolve(JSObject().put("success", success))
+        try {
+            val result = JSObject()
+            // The service runs in :listener, so its in-memory flag is not shared with this plugin process.
+            val running =
+                MatrixSyncService.hasCredentials(context) && MatrixSyncService.isListenerHealthy(context)
+            result.put("running", running)
+            result.put("listening", running)
+            result.put("batteryIgnored", isBatteryIgnored(context))
+            val notificationsAllowed =
+                Build.VERSION.SDK_INT < 33 ||
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.POST_NOTIFICATIONS,
+                    ) == PackageManager.PERMISSION_GRANTED
+            result.put("notificationsAllowed", notificationsAllowed)
+            call.resolve(result)
+        } catch (e: Exception) {
+            call.reject("getStatus failed: ${e.message}", e)
         }
     }
 
-    /**
-     * Resolves the Matrix push gateway for a UnifiedPush endpoint using native HTTP
-     * so discovery is not blocked by missing CORS headers in the WebView.
-     */
+    /** Asks Android to leave Paarrot out of battery optimization so the listener stays up. */
     @PluginMethod
-    fun resolveUnifiedPushGateway(call: PluginCall) {
-        val endpoint = call.getString("endpoint")
-            ?: return call.reject("endpoint required")
-        Thread {
-            val gateway = UnifiedPushManager.resolveMatrixGateway(endpoint)
-            bridge?.executeOnMainThread {
-                call.resolve(JSObject().put("gatewayUrl", gateway))
-            }
-        }.start()
+    fun requestBatteryExemption(call: PluginCall) {
+        val ignored = askBatteryExemption(context, activity)
+        call.resolve(JSObject().put("ignored", ignored))
     }
 
     /**
@@ -227,5 +222,39 @@ class SyncServicePlugin : Plugin() {
 
     companion object {
         const val PREFS = "sync_service_prefs"
+
+        fun isBatteryIgnored(context: Context): Boolean {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            return pm.isIgnoringBatteryOptimizations(context.packageName)
+        }
+
+        fun askBatteryExemption(context: Context, activity: Activity?): Boolean {
+            if (isBatteryIgnored(context)) return true
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${context.packageName}")
+            }
+            if (activity != null) {
+                activity.startActivity(intent)
+            } else {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+            }
+            return false
+        }
+    }
+
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val act = activity ?: return
+        if (ContextCompat.checkSelfPermission(act, Manifest.permission.POST_NOTIFICATIONS)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        ActivityCompat.requestPermissions(
+            act,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            4101,
+        )
     }
 }

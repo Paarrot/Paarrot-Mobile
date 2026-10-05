@@ -14,8 +14,10 @@ import { isCapacitorNative, requestSystemNotificationPermission } from '../../..
 import {
   isBackgroundSyncSupported,
   getBackgroundSyncStatus,
-  requestResetPushRegistration,
+  requestBatteryExemption,
+  startBackgroundSync,
   triggerBackgroundSyncPing,
+  type ListenerStatus,
 } from '../../../utils/backgroundSync';
 
 function EmailNotification() {
@@ -166,119 +168,107 @@ export function SystemNotification() {
   );
 }
 
-type PushStatus = {
-  registered: boolean;
-  distributor: string;
-  endpoint: string;
-  distributors: string[];
-  lastFailure: string;
-  autoStartBlocked: boolean;
-};
-
-/** Android-only section showing UnifiedPush registration status and controls. */
+/** Android-only controls for Paarrot's persistent message listener. */
 function AndroidPushNotifications() {
-  const [status, setStatus] = useState<PushStatus | undefined>(undefined);
+  const mx = useMatrixClient();
+  const [status, setStatus] = useState<ListenerStatus | undefined>(undefined);
   const [loading, setLoading] = useState(true);
-  const [lastError, setLastError] = useState<string | undefined>(undefined);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
-    const s = await getBackgroundSyncStatus();
-    const distributors = Array.isArray(s?.distributors)
-      ? s.distributors
-      : typeof s?.distributors === 'string' && s.distributors && s.distributors !== '[]'
-        ? [s.distributors]
-        : [];
-    setStatus(
-      s
-        ? {
-            registered: s.registered,
-            distributor: s.distributor || '',
-            endpoint: s.endpoint || '',
-            distributors,
-            lastFailure: s.lastFailure || '',
-            autoStartBlocked: Boolean(s.autoStartBlocked),
-          }
-        : undefined
-    );
+    setStatus(await getBackgroundSyncStatus());
     setLoading(false);
   }, []);
 
   useEffect(() => {
     void refresh();
+    const id = window.setInterval(() => void refresh(), 4000);
+    return () => window.clearInterval(id);
   }, [refresh]);
 
-  const [resetState, reset] = useAsyncCallback(
+  const [batteryState, allowBattery] = useAsyncCallback(
     useCallback(async () => {
-      setLastError(undefined);
-      const result = await requestResetPushRegistration();
+      await requestBatteryExemption();
       await refresh();
-      if (!result.success) {
-        setLastError(
-          'Selected distributor but did not get a push endpoint. In ntfy: enable UnifiedPush, allow unrestricted battery, then try Reset again.'
-        );
-      }
     }, [refresh])
+  );
+
+  const [startState, startListener] = useAsyncCallback(
+    useCallback(async () => {
+      await requestSystemNotificationPermission();
+      await startBackgroundSync(mx);
+      await refresh();
+    }, [mx, refresh])
   );
 
   const [pingState, ping] = useAsyncCallback(
     useCallback(async () => {
       await triggerBackgroundSyncPing('manual-test');
-    }, [])
+      await refresh();
+    }, [refresh])
   );
 
   const isBusy =
     loading ||
-    resetState.status === AsyncStatus.Loading ||
+    batteryState.status === AsyncStatus.Loading ||
+    startState.status === AsyncStatus.Loading ||
     pingState.status === AsyncStatus.Loading;
+
+  const actionError =
+    startState.status === AsyncStatus.Error
+      ? startState.error
+      : batteryState.status === AsyncStatus.Error
+        ? batteryState.error
+        : pingState.status === AsyncStatus.Error
+          ? pingState.error
+          : undefined;
 
   const statusDescription = (() => {
     if (loading) return 'Loading status…';
     if (status === undefined) {
       return (
         <Text as="span" style={{ color: color.Critical.Main }} size="T200">
-          Failed to read push status.
+          Failed to read the message listener status.
         </Text>
       );
     }
-    if (status.registered) {
+    if (status.error) {
+      return (
+        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+          {status.error}
+        </Text>
+      );
+    }
+    if (status.notificationsAllowed === false) {
+      return (
+        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+          Allow notifications for Paarrot, then tap Start.
+        </Text>
+      );
+    }
+    if (status.listening && status.batteryIgnored) {
       return (
         <Text as="span" size="T200">
-          {`Distributor: ${status.distributor || 'unknown'}`}
+          Paarrot is listening for messages.
         </Text>
       );
     }
-    if (status.lastFailure === 'AUTO_START_BLOCKED' || status.autoStartBlocked) {
+    if (status.listening) {
       return (
-        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
-          Phone is blocking auto-start for Paarrot. Open App Boot / Auto-start settings, allow Paarrot (and ntfy), then tap Reset.
-        </Text>
-      );
-    }
-    if (status.lastFailure) {
-      return (
-        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
-          {`Registration failed (${status.lastFailure}). Tap Reset and pick ntfy again.`}
-        </Text>
-      );
-    }
-    if (status.distributors.length === 0) {
-      return (
-        <Text as="span" style={{ color: color.Critical.Main }} size="T200">
-          No UnifiedPush distributor found. Install ntfy from Play Store/F-Droid and enable UnifiedPush in ntfy settings.
+        <Text as="span" size="T200">
+          Paarrot is listening. Allow unrestricted battery so Android leaves it running.
         </Text>
       );
     }
     return (
-      <Text as="span" style={{ color: color.Warning?.Main ?? color.Critical.Main }} size="T200">
-        {`Found ${status.distributors.join(', ')} but not registered yet. Tap Reset and pick ntfy.`}
+      <Text as="span" style={{ color: color.Critical.Main }} size="T200">
+        The message listener is stopped. Tap Start.
       </Text>
     );
   })();
 
   return (
     <Box direction="Column" gap="100">
-      <Text size="L400">Android Push (UnifiedPush)</Text>
+      <Text size="L400">Android Notifications</Text>
       <SequenceCard
         className={SequenceCardStyle}
         variant="SurfaceVariant"
@@ -286,48 +276,78 @@ function AndroidPushNotifications() {
         gap="400"
       >
         <SettingTile
-          title="Background Notifications"
+          title="Message listener"
           description={
             <>
               {statusDescription}
-              {lastError ? (
+              {actionError !== undefined && (
                 <Text as="span" style={{ color: color.Critical.Main, display: 'block' }} size="T200">
-                  {lastError}
+                  {actionError instanceof Error ? actionError.message : String(actionError)}
                 </Text>
-              ) : null}
+              )}
             </>
           }
-          after={loading ? <Spinner variant="Secondary" /> : undefined}
+          after={
+            loading ? (
+              <Spinner variant="Secondary" />
+            ) : (
+              <Button
+                size="300"
+                radii="300"
+                variant="Secondary"
+                disabled={isBusy || Boolean(status?.listening)}
+                onClick={() =>
+                  void startListener().catch((err) =>
+                    console.error('[AndroidNotifications] Failed to start listener:', err)
+                  )
+                }
+              >
+                {startState.status === AsyncStatus.Loading ? (
+                  <Spinner variant="Secondary" size="200" />
+                ) : (
+                  <Text size="B300">{status?.listening ? 'Running' : 'Start'}</Text>
+                )}
+              </Button>
+            )
+          }
         />
         <SettingTile
-          title="Change Distributor"
-          description="Shows a list of installed UnifiedPush apps (ntfy, etc.) and registers the one you pick."
+          title="Unrestricted battery"
+          description="Lets the listener stay awake when the screen is off."
           after={
             <Button
               size="300"
               radii="300"
               variant="Secondary"
-              disabled={isBusy}
-              onClick={() => void reset()}
+              disabled={isBusy || Boolean(status?.batteryIgnored)}
+              onClick={() =>
+                void allowBattery().catch((err) =>
+                  console.error('[AndroidNotifications] Failed to request battery exemption:', err)
+                )
+              }
             >
-              {resetState.status === AsyncStatus.Loading ? (
+              {batteryState.status === AsyncStatus.Loading ? (
                 <Spinner variant="Secondary" size="200" />
               ) : (
-                <Text size="B300">Reset</Text>
+                <Text size="B300">{status?.batteryIgnored ? 'Allowed' : 'Allow'}</Text>
               )}
             </Button>
           }
         />
         <SettingTile
           title="Test Notification"
-          description="Trigger a test push ping to verify the pipeline works."
+          description="Ask the listener to check for messages now."
           after={
             <Button
               size="300"
               radii="300"
               variant="Secondary"
               disabled={isBusy}
-              onClick={() => void ping()}
+              onClick={() =>
+                void ping().catch((err) =>
+                  console.error('[AndroidNotifications] Failed to trigger listener sync:', err)
+                )
+              }
             >
               {pingState.status === AsyncStatus.Loading ? (
                 <Spinner variant="Secondary" size="200" />

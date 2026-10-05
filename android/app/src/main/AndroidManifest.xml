@@ -62,23 +62,36 @@
 
         <service
             android:name=".MatrixSyncService"
-            android:foregroundServiceType="dataSync"
+            android:process=":listener"
+            android:foregroundServiceType="specialUse|dataSync"
             android:exported="false"
-            android:stopWithTask="false" />
-
-        <service
-            android:name=".UnifiedPushService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
-            </intent-filter>
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="matrix_message_listener" />
         </service>
 
         <receiver
             android:name=".BootReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:enabled="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".ListenerWatchdogReceiver"
+            android:process=":listener"
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.paarrot.app.LISTENER_WATCHDOG" />
+                <action android:name="com.paarrot.app.LISTENER_RESTART" />
             </intent-filter>
         </receiver>
     </application>
@@ -86,31 +99,18 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
-    <!-- Android 11+ package visibility for UnifiedPush distributors (ntfy, etc.) -->
-    <queries>
-        <intent>
-            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
-        </intent>
-        <intent>
-            <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
-        </intent>
-        <intent>
-            <action android:name="org.unifiedpush.android.distributor.LINK" />
-        </intent>
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="unifiedpush" />
-        </intent>
-        <package android:name="io.heckel.ntfy" />
-    </queries>
 </manifest>

@@ -1,5 +1,6 @@
 package com.paarrot.app
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,8 +9,12 @@ import android.app.Service
 import android.media.AudioAttributes
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import android.graphics.Bitmap
@@ -21,6 +26,7 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
@@ -30,6 +36,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -39,15 +47,18 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * ForegroundService that performs a short, one-shot Matrix /sync fetch after
- * a wake ping from UnifiedPush or a manual diagnostic trigger.
+ * Foreground service that keeps a Matrix /sync long-poll open and posts message
+ * notifications. It stays up across battery limits with a partial wake lock.
  */
 class MatrixSyncService : Service() {
 
     private val job = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + job)
+    private val listenerStarted = AtomicBoolean(false)
+    private var wakeLock: PowerManager.WakeLock? = null
 
     /** Event IDs already shown as notifications this session — prevents duplicates on restart. */
     private val shownEventIds = HashSet<String>(64)
@@ -69,44 +80,158 @@ class MatrixSyncService : Service() {
             ?: prefs.getString(EXTRA_HOMESERVER, null)
         val token = intent?.getStringExtra(EXTRA_TOKEN)
             ?: prefs.getString(EXTRA_TOKEN, null)
-        val userId = intent?.getStringExtra(EXTRA_USER_ID)
-            ?: prefs.getString(EXTRA_USER_ID, null) ?: ""
 
         if (homeserver == null || token == null) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        val triggerReason = intent?.getStringExtra(EXTRA_TRIGGER_REASON) ?: MODE_ONE_SHOT
-        startForeground(NOTIF_ID_STATUS, buildStatusNotification())
+        scheduleKeepAlive(applicationContext)
+        holdWakeLock()
+        try {
+            promoteToForeground()
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed: ${e.message}", e)
+            scheduleRestart(applicationContext, 15_000L)
+            releaseWakeLock()
+            stopSelf()
+            return START_STICKY
+        }
+        listenerAlive.set(true)
+        markListenerHeartbeat(applicationContext)
+        Log.i(
+            TAG,
+            "listener started reason=${intent?.getStringExtra(EXTRA_TRIGGER_REASON) ?: "sticky"} " +
+                "pid=${android.os.Process.myPid()} exactAlarms=${canExactAlarms(applicationContext.getSystemService(ALARM_SERVICE) as AlarmManager)}",
+        )
 
-        serviceScope.launch {
-            try {
-                runSingleSyncFetch(homeserver, token, userId, triggerReason)
-                Log.d(TAG, "One-shot sync completed (reason=$triggerReason)")
-            } finally {
-                stopForegroundCompat()
-                stopSelf(startId)
+        if (listenerStarted.compareAndSet(false, true)) {
+            serviceScope.launch {
+                var backoffMs = 0L
+                try {
+                    while (isActive) {
+                        if (backoffMs > 0) delay(backoffMs)
+                        holdWakeLock()
+                        val live = applicationContext.getSharedPreferences(
+                            SyncServicePlugin.PREFS,
+                            Context.MODE_PRIVATE,
+                        )
+                        val liveHomeserver = live.getString(EXTRA_HOMESERVER, null)
+                        val liveToken = live.getString(EXTRA_TOKEN, null)
+                        val liveUserId = live.getString(EXTRA_USER_ID, null) ?: ""
+                        if (liveHomeserver == null || liveToken == null) break
+                        val keepGoing = runSingleSyncFetch(
+                            liveHomeserver,
+                            liveToken,
+                            liveUserId,
+                        )
+                        // Heartbeat for the watchdog — even if the process stays up with a stuck loop.
+                        markListenerHeartbeat(applicationContext)
+                        if (!keepGoing) break
+                        backoffMs = 0L
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "Listener loop error: ${e.message}")
+                } finally {
+                    listenerStarted.set(false)
+                    listenerAlive.set(false)
+                    val shouldRestart = hasCredentials(applicationContext)
+                    releaseWakeLock()
+                    if (shouldRestart) {
+                        Log.w(TAG, "Listener loop ended — relaunching")
+                        scheduleKeepAlive(applicationContext)
+                        scheduleRestart(applicationContext, 3_000L)
+                        // Immediate revive when possible; alarm covers OEM/LMK gaps.
+                        requestSyncFetch(applicationContext, "loop-relaunch")
+                    } else {
+                        stopForegroundCompat()
+                    }
+                    stopSelf()
+                }
             }
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (hasCredentials(applicationContext)) {
+            scheduleRestart(applicationContext, 2_000L)
+            scheduleKeepAlive(applicationContext)
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    /**
+     * Android 14+ / 15 dataSync quota (and OEM FGS timeouts). Must stop promptly
+     * or the process is crashed — then revive via exact alarm.
+     */
+    override fun onTimeout(startId: Int) {
+        handleFgsTimeout(startId, -1)
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        handleFgsTimeout(startId, fgsType)
+    }
+
+    private fun handleFgsTimeout(startId: Int, fgsType: Int) {
+        Log.e(TAG, "FGS onTimeout startId=$startId type=$fgsType — stopping and scheduling revive")
+        listenerStarted.set(false)
+        listenerAlive.set(false)
+        if (hasCredentials(applicationContext)) {
+            scheduleRestart(applicationContext, 15_000L)
+            scheduleKeepAlive(applicationContext)
+        }
+        releaseWakeLock()
+        stopForegroundCompat()
+        job.cancel()
+        stopSelf()
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        listenerStarted.set(false)
+        listenerAlive.set(false)
+        if (hasCredentials(applicationContext)) {
+            scheduleRestart(applicationContext, 5_000L)
+        }
+        releaseWakeLock()
         job.cancel()
+        super.onDestroy()
     }
 
+    private fun holdWakeLock() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        val existing = wakeLock
+        if (existing == null) {
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Paarrot:message-listener").apply {
+                setReferenceCounted(false)
+                // Refresh often so OEM idle policies do not drop an "infinite" lock.
+                acquire(12 * 60 * 1000L)
+            }
+        } else if (!existing.isHeld) {
+            existing.acquire(12 * 60 * 1000L)
+        } else {
+            // Renew the lease while the loop is healthy.
+            existing.acquire(12 * 60 * 1000L)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        val lock = wakeLock ?: return
+        if (lock.isHeld) lock.release()
+        wakeLock = null
+    }
+
+    /** @return false when credentials are dead and the listener should stop. */
     private suspend fun runSingleSyncFetch(
         homeserver: String,
         token: String,
         userId: String,
-        triggerReason: String,
-    ) {
+    ): Boolean {
         val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val since = prefs.getString(KEY_SINCE, null)
-        val isFirstSync = since == null
 
         try {
             val url = buildSyncUrl(homeserver.trimEnd('/'), since)
@@ -118,27 +243,18 @@ class MatrixSyncService : Service() {
                     val nextBatch = json.optString("next_batch").takeIf { it.isNotBlank() }
 
                     if (nextBatch != null) {
+                        val backlog = since == null
                         prefs.edit().putString(KEY_SINCE, nextBatch).apply()
-
-                        // Push wakes should still notify even if the WebView leftover
-                        // "foreground" flag is stale; JS path is suppressed while backgrounded.
-                        val fromPush = triggerReason.startsWith("unifiedpush")
-                        val suppressBecauseUi = appInForeground && !fromPush
-                        if (!isFirstSync) {
-                            // Always dismiss trays when another device (or this one) marked rooms read,
-                            // even while the UI is foregrounded and posting is suppressed.
-                            dismissClearedRoomNotifications(json)
-                            if (!suppressBecauseUi) {
-                                processRoomEvents(json, userId)
-                            } else {
-                                Log.d(
-                                    TAG,
-                                    "Skipping notification posts (foreground=$appInForeground, reason=$triggerReason)",
-                                )
+                        val appForeground = isAppInForeground(applicationContext)
+                        val notifiedRooms = if (backlog || appForeground) {
+                            if (appForeground && !backlog) {
+                                Log.d(TAG, "Skipping native notification posts while Paarrot is foregrounded")
                             }
+                            emptySet()
                         } else {
-                            Log.d(TAG, "Skipping notifications (firstSync=true, reason=$triggerReason)")
+                            processRoomEvents(json, userId)
                         }
+                        dismissClearedRoomNotifications(json, notifiedRooms)
                     }
                 }
                 401, 403 -> {
@@ -148,24 +264,29 @@ class MatrixSyncService : Service() {
                         .edit()
                         .clear()
                         .apply()
+                    return false
                 }
                 else -> {
                     Log.w(TAG, "Sync fetch failed with HTTP $responseCode")
+                    delay(8_000)
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "Sync error: ${e.message}")
+            delay(8_000)
         }
+        return true
     }
 
     private fun buildSyncUrl(base: String, since: String?): String {
-        // Include encrypted events — most DMs/rooms are E2EE and never emit plaintext m.room.message.
-        val filter = """{"room":{"timeline":{"limit":10,"types":["m.room.message","m.room.encrypted","m.sticker"]},"state":{"types":[]},"account_data":{"types":[]},"ephemeral":{"types":[]}},"account_data":{"types":[]},"presence":{"types":[]}}"""
+        // Keep the filter light so encrypted DMs and normal rooms all appear in /sync.
+        val filter =
+            """{"room":{"timeline":{"limit":20},"state":{"lazy_load_members":true},"ephemeral":{"types":[]},"account_data":{"types":[]}},"presence":{"types":[]},"account_data":{"types":[]}}"""
         val encodedFilter = URLEncoder.encode(filter, "UTF-8")
         val sinceParam = if (since != null) "&since=${URLEncoder.encode(since, "UTF-8")}" else ""
-        return "$base/_matrix/client/v3/sync?timeout=12000&filter=$encodedFilter$sinceParam"
+        return "$base/_matrix/client/v3/sync?timeout=25000&filter=$encodedFilter$sinceParam"
     }
 
     private suspend fun doHttpGet(urlString: String, token: String): Pair<Int, String?> =
@@ -175,8 +296,8 @@ class MatrixSyncService : Service() {
                 conn.requestMethod = "GET"
                 conn.setRequestProperty("Authorization", "Bearer $token")
                 conn.setRequestProperty("Accept", "application/json")
-                conn.connectTimeout = 5_000
-                conn.readTimeout = 35_000
+                conn.connectTimeout = 15_000
+                conn.readTimeout = 45_000
                 val code = conn.responseCode
                 val body = if (code == 200) conn.inputStream.bufferedReader().readText() else null
                 Pair(code, body)
@@ -207,9 +328,10 @@ class MatrixSyncService : Service() {
      * Covers “marked as read on another device” while this phone is backgrounded.
      * Only acts when [unread_notifications] is present in this sync batch (count changed).
      */
-    private fun dismissClearedRoomNotifications(sync: JSONObject) {
+    private fun dismissClearedRoomNotifications(sync: JSONObject, justNotified: Set<String>) {
         val joinedRooms = sync.optJSONObject("rooms")?.optJSONObject("join") ?: return
         for (roomId in joinedRooms.keys().asSequence()) {
+            if (roomId in justNotified) continue
             val roomData = joinedRooms.optJSONObject(roomId) ?: continue
             if (!roomData.has("unread_notifications")) continue
             val unread = roomData.optJSONObject("unread_notifications")
@@ -220,120 +342,104 @@ class MatrixSyncService : Service() {
         }
     }
 
-    private fun processRoomEvents(sync: JSONObject, myUserId: String) {
+    private fun processRoomEvents(sync: JSONObject, myUserId: String): Set<String> {
+        val notified = mutableSetOf<String>()
         val prefs = applicationContext.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
-        val homeserver = prefs.getString(EXTRA_HOMESERVER, null)?.trimEnd('/') ?: return
-        val token = prefs.getString(EXTRA_TOKEN, null) ?: return
-        val joinedRooms = sync.optJSONObject("rooms")?.optJSONObject("join") ?: return
+        val homeserver = prefs.getString(EXTRA_HOMESERVER, null)?.trimEnd('/') ?: return notified
+        val token = prefs.getString(EXTRA_TOKEN, null) ?: return notified
+        val joinedRooms = sync.optJSONObject("rooms")?.optJSONObject("join") ?: return notified
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         ensureMessageChannels(nm)
 
         val notifyCtx = loadNotifyContext(homeserver, token, myUserId)
 
         val roomIds = joinedRooms.keys().asSequence().toList()
+        Log.i(TAG, "processRoomEvents rooms=${roomIds.size}")
         for (roomId in roomIds) {
             val roomData = joinedRooms.optJSONObject(roomId) ?: continue
             val mode = resolveRoomNotifyMode(roomId, notifyCtx)
-
-            // Homeserver unread counts already apply push rules — skip rooms with nothing to notify.
-            val unread = roomData.optJSONObject("unread_notifications")
-            val notificationCount = unread?.optInt("notification_count", 0) ?: 0
-            val highlightCount = unread?.optInt("highlight_count", 0) ?: 0
-            if (mode == RoomNotifyMode.MUTE || notificationCount <= 0) continue
-
-            val mentionsOnly = mode == RoomNotifyMode.MENTIONS_AND_KEYWORDS
-            if (mentionsOnly && highlightCount <= 0) {
-                // Mentions-only rooms: without a highlight, skip (encrypted bodies can't be scanned).
+            if (mode == RoomNotifyMode.MUTE) {
+                Log.i(TAG, "skip muted $roomId")
                 continue
             }
 
-            val timeline = roomData.optJSONObject("timeline") ?: continue
-            val events = timeline.optJSONArray("events") ?: continue
-
+            val timeline = roomData.optJSONObject("timeline")
+            val events = timeline?.optJSONArray("events")
             var notifiedForRoom = false
-            for (i in 0 until events.length()) {
-                val event = events.optJSONObject(i) ?: continue
-                val eventId = event.optString("event_id")
-                val eventType = event.optString("type")
 
-                val isMessageLike =
-                    eventType == "m.room.message" ||
-                        eventType == "m.room.encrypted" ||
-                        eventType == "m.sticker"
-                if (!isMessageLike) continue
-                if (event.optString("sender") == myUserId) continue
-                if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
+            if (events != null) {
+                for (i in 0 until events.length()) {
+                    val event = events.optJSONObject(i) ?: continue
+                    val eventId = event.optString("event_id")
+                    val eventType = event.optString("type")
+                    val sender = event.optString("sender")
 
-                val content = event.optJSONObject("content") ?: JSONObject()
+                    val isMessageLike =
+                        eventType == "m.room.message" ||
+                            eventType == "m.room.encrypted" ||
+                            eventType == "m.sticker"
+                    if (!isMessageLike) continue
+                    if (sender.isNotBlank() && sender == myUserId) continue
+                    if (eventId.isNotBlank() && !shownEventIds.add(eventId)) continue
 
-                // Plaintext mention/keyword filter; encrypted events already passed highlight_count.
-                if (
-                    mentionsOnly &&
-                    eventType != "m.room.encrypted" &&
-                    !isSpecialMessage(content, notifyCtx)
-                ) {
-                    continue
-                }
-
-                val body = when {
-                    eventType == "m.room.encrypted" -> "Encrypted message"
-                    eventType == "m.sticker" -> "🖼️ Sticker"
-                    else -> {
-                        val msgtype = content.optString("msgtype")
-                        val rawBody = content.optString("body")
-                        when (msgtype) {
-                            // Skip Matrix body for images/stickers — it's usually a useless filename.
-                            "m.image"   -> "📷 Photo"
-                            "m.video"   -> if (rawBody.isNotBlank()) "🎥 $rawBody" else "🎥 Video"
-                            "m.audio"   -> if (rawBody.isNotBlank()) "🎵 $rawBody" else "🎵 Audio"
-                            "m.file"    -> if (rawBody.isNotBlank()) "📎 $rawBody" else "📎 File"
-                            "m.sticker" -> "🖼️ Sticker"
-                            else        -> rawBody.takeIf { it.isNotBlank() }
+                    val content = event.optJSONObject("content") ?: JSONObject()
+                    val encrypted = eventType == "m.room.encrypted"
+                    val body = when {
+                        encrypted -> "Encrypted message"
+                        eventType == "m.sticker" -> "Sticker"
+                        else -> {
+                            val msgtype = content.optString("msgtype")
+                            val rawBody = content.optString("body")
+                            when (msgtype) {
+                                "m.image" -> "Photo"
+                                "m.video" -> rawBody.ifBlank { "Video" }
+                                "m.audio" -> rawBody.ifBlank { "Audio" }
+                                "m.file" -> rawBody.ifBlank { "File" }
+                                else -> rawBody.takeIf { it.isNotBlank() }
+                            }
                         }
+                    } ?: continue
+
+                    val profile = try {
+                        resolveProfile(sender, homeserver, token)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "profile fetch failed: ${e.message}")
+                        UserProfile(sender.substringAfter("@").substringBefore(":").ifBlank { "Someone" }, null)
                     }
-                } ?: continue
 
-                val sender = event.optString("sender")
-                val profile = resolveProfile(sender, homeserver, token)
-
-                val msgtype = content.optString("msgtype")
-                val inlineImage: Bitmap? = if (
-                    eventType != "m.room.encrypted" &&
-                    (msgtype == "m.image" || msgtype == "m.sticker" || eventType == "m.sticker") &&
-                    !content.has("file")
-                ) {
-                    content.optString("url").takeIf { it.startsWith("mxc://") }?.let { mxc ->
-                        mxcToDownloadUrls(mxc, homeserver)
-                            .firstNotNullOfOrNull { downloadBitmap(it, token) }
-                    }
-                } else null
-
-                showMessageNotification(
-                    nm,
-                    roomId,
-                    profile.displayName,
-                    body,
-                    profile.avatar,
-                    inlineImage,
-                    resolveGroupInfo(roomId, notifyCtx),
-                )
-                notifiedForRoom = true
+                    Log.i(TAG, "notify room=$roomId type=$eventType sender=$sender")
+                    showMessageNotification(
+                        nm,
+                        roomId,
+                        profile.displayName,
+                        body,
+                        profile.avatar,
+                        null,
+                        resolveGroupInfo(roomId, notifyCtx),
+                    )
+                    notifiedForRoom = true
+                }
             }
 
-            // Fallback: HS says there are notifications but timeline filter missed usable events.
+            val unread = roomData.optJSONObject("unread_notifications")
+            val notificationCount = unread?.optInt("notification_count", 0) ?: 0
             if (!notifiedForRoom && notificationCount > 0) {
                 val groupInfo = resolveGroupInfo(roomId, notifyCtx)
+                Log.i(TAG, "fallback notify room=$roomId count=$notificationCount")
                 showMessageNotification(
                     nm,
                     roomId,
                     groupInfo.roomName.ifBlank { "New message" },
-                    if (mentionsOnly) "New mention" else "New message",
+                    "New message",
                     null,
                     null,
                     groupInfo,
                 )
+                notifiedForRoom = true
             }
+            if (notifiedForRoom) notified.add(roomId)
         }
+        return notified
     }
 
     /** Load push rules, DM list, keywords, and own display name for notification filtering. */
@@ -636,6 +742,9 @@ class MatrixSyncService : Service() {
         groupInfo: NotificationGroupInfo,
     ) {
         val isDm = groupInfo.kind == "direct"
+        val navPath =
+            if (isDm) "/direct/${Uri.encode(roomId)}/"
+            else "/home/${Uri.encode(roomId)}/"
         postMessageNotification(
             this,
             roomId = roomId,
@@ -647,29 +756,66 @@ class MatrixSyncService : Service() {
             kind = groupInfo.kind,
             largeIcon = largeIcon,
             inlineImage = inlineImage,
-            path = null,
+            path = navPath,
         )
+    }
+
+    private fun promoteToForeground() {
+        val notification = buildStatusNotification()
+        if (Build.VERSION.SDK_INT >= 34) {
+            // specialUse avoids the Android 15 6-hour dataSync background quota.
+            startForeground(
+                NOTIF_ID_STATUS,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE,
+            )
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIF_ID_STATUS,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            startForeground(NOTIF_ID_STATUS, notification)
+        }
     }
 
     private fun buildStatusNotification(): Notification {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            nm.deleteNotificationChannel(CHANNEL_STATUS)
             val channel = NotificationChannel(
-                CHANNEL_STATUS, "Sync Status",
-                NotificationManager.IMPORTANCE_MIN,
+                CHANNEL_LISTENER,
+                "Message listener",
+                NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Paarrot background sync status"
+                description = "Shows while Paarrot is listening for messages"
                 setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
             }
             nm.createNotificationChannel(channel)
         }
 
-        return NotificationCompat.Builder(this, CHANNEL_STATUS)
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_LISTENER)
             .setSmallIcon(R.drawable.ic_stat_paarrot)
             .setContentTitle("Paarrot")
-            .setContentText("Checking for new messages")
-            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setContentText("Listening for messages")
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
+            .setSilent(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(open)
             .build()
     }
 
@@ -698,19 +844,226 @@ class MatrixSyncService : Service() {
         const val KEY_NOTIFICATION_GROUPS = "notification_groups"
         const val PREFS = "matrix_sync_prefs"
         const val KEY_SINCE = "since_token"
-        private const val KEY_LAST_WAKE_MS = "last_wake_ms"
+        private const val HEARTBEAT_FILE = "listener_heartbeat_ms"
+        private const val FOREGROUND_FILE = "app_in_foreground"
         private const val NOTIF_ID_STATUS = 1001
         private const val CHANNEL_STATUS = "sync_status"
-        private const val CHANNEL_MESSAGES = "messages_paarrot"
-        private const val CHANNEL_DIRECTS = "messages_directs"
-        private const val CHANNEL_SPACES = "messages_spaces"
-        private const val CHANNEL_HOME = "messages_home"
+        // Bump id so IMPORTANCE_LOW applies (Android won't lower an existing channel).
+        private const val CHANNEL_LISTENER = "paarrot_listening_v2"
+        // New id required — Android will not raise importance on an existing channel.
+        private const val CHANNEL_POPUP = "paarrot_priority_v2"
+        private const val CHANNEL_MESSAGES = "paarrot_messages"
+        private const val CHANNEL_DIRECTS = "paarrot_directs_messages"
+        private const val CHANNEL_SPACES = "paarrot_spaces"
+        private const val CHANNEL_HOME = "paarrot_rooms"
         private const val GROUP_DIRECTS = "paarrot_directs"
         private const val GROUP_HOME = "paarrot_home"
-        private const val MIN_WAKE_INTERVAL_MS = 7_500L
         private const val MAX_MESSAGING_HISTORY = 8
         private const val KEY_MSG_HISTORY_PREFIX = "notif_hist_"
+        /** Chained one-shot interval when battery unrestricted. */
+        private const val WATCHDOG_FAST_MS = 90_000L
+        /** Gentler interval when still battery-optimized. */
+        private const val WATCHDOG_SLOW_MS = 3 * 60 * 1000L
+        /**
+         * If no sync heartbeat within this window, treat the listener as dead even when
+         * the in-process alive flag is still set (hung long-poll after LMK pressure).
+         */
+        private const val HEARTBEAT_STALE_MS = 90_000L
+        private const val PI_WATCHDOG = 9101
+        private const val PI_RESTART = 9102
         const val MODE_ONE_SHOT = "one_shot"
+        const val MODE_LISTENER = "listener"
+
+        @JvmStatic
+        fun hasCredentials(context: Context): Boolean {
+            val prefs = context.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
+            return !prefs.getString(EXTRA_HOMESERVER, null).isNullOrBlank() &&
+                !prefs.getString(EXTRA_TOKEN, null).isNullOrBlank()
+        }
+
+        /** Cross-process heartbeat file — SharedPreferences caches per-process and lie. */
+        private fun heartbeatFile(context: Context): File =
+            File(context.applicationContext.filesDir, HEARTBEAT_FILE)
+
+        private fun readHeartbeatMs(context: Context): Long {
+            return try {
+                val f = heartbeatFile(context)
+                if (!f.isFile) return 0L
+                f.readText().trim().toLongOrNull() ?: 0L
+            } catch (e: Exception) {
+                Log.w(TAG, "heartbeat read failed: ${e.message}")
+                0L
+            }
+        }
+
+        @JvmStatic
+        fun markListenerHeartbeat(context: Context) {
+            val now = System.currentTimeMillis()
+            try {
+                val f = heartbeatFile(context)
+                f.parentFile?.mkdirs()
+                // Atomic-ish write so a mid-kill read never sees a partial timestamp.
+                val tmp = File(f.parentFile, "${f.name}.tmp")
+                FileOutputStream(tmp).use { out ->
+                    out.write(now.toString().toByteArray(Charsets.UTF_8))
+                    out.fd.sync()
+                }
+                if (!tmp.renameTo(f)) {
+                    tmp.copyTo(f, overwrite = true)
+                    tmp.delete()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "heartbeat write failed: ${e.message}")
+            }
+            Log.d(TAG, "heartbeat ts=$now")
+        }
+
+        /**
+         * Heartbeat-only health check — works across the UI process and `:listener`.
+         * Do not require the in-process alive flag (that is always false from the UI process).
+         */
+        @JvmStatic
+        fun isListenerHealthy(context: Context): Boolean {
+            val last = readHeartbeatMs(context)
+            if (last <= 0L) return false
+            val age = System.currentTimeMillis() - last
+            val ok = age < HEARTBEAT_STALE_MS
+            if (!ok) {
+                Log.w(TAG, "heartbeat stale ageMs=$age threshold=$HEARTBEAT_STALE_MS")
+            }
+            return ok
+        }
+
+        @JvmStatic
+        fun heartbeatAgeMs(context: Context): Long {
+            val last = readHeartbeatMs(context)
+            if (last <= 0L) return -1L
+            return System.currentTimeMillis() - last
+        }
+
+        /** Persist UI visibility so the `:listener` process can suppress tray dupes. */
+        @JvmStatic
+        fun setAppInForeground(context: Context, foreground: Boolean) {
+            // File + sync so `:listener` sees the flip without SharedPreferences cache lies.
+            try {
+                val f = File(context.applicationContext.filesDir, FOREGROUND_FILE)
+                FileOutputStream(f).use { out ->
+                    out.write(if (foreground) '1'.code else '0'.code)
+                    out.fd.sync()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "foreground flag write failed: ${e.message}")
+            }
+        }
+
+        @JvmStatic
+        fun isAppInForeground(context: Context): Boolean {
+            return try {
+                val f = File(context.applicationContext.filesDir, FOREGROUND_FILE)
+                if (!f.isFile) return false
+                f.readText().trim() == "1"
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+        private fun isBatteryUnrestricted(context: Context): Boolean {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            return pm.isIgnoringBatteryOptimizations(context.packageName)
+        }
+
+        private fun canExactAlarms(am: AlarmManager): Boolean {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.canScheduleExactAlarms()
+            } else {
+                true
+            }
+        }
+
+        /** Prefer exact-while-idle; fall back to inexact while-idle when denied. */
+        private fun setWakeupAlarm(am: AlarmManager, atElapsed: Long, pi: PendingIntent) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (canExactAlarms(am)) {
+                    try {
+                        am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, pi)
+                        return
+                    } catch (e: SecurityException) {
+                        Log.w(TAG, "exact alarm denied: ${e.message}")
+                    }
+                }
+                am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, pi)
+            } else {
+                @Suppress("DEPRECATION")
+                am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, pi)
+            }
+        }
+
+        /**
+         * Chained one-shot wake so OEM battery savers / Google Home LMK cannot leave
+         * the listener dead for a full inexact 5‑minute window.
+         */
+        @JvmStatic
+        fun scheduleKeepAlive(context: Context) {
+            if (!hasCredentials(context)) return
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, ListenerWatchdogReceiver::class.java).apply {
+                action = ListenerWatchdogReceiver.ACTION_WATCHDOG
+            }
+            val pi = PendingIntent.getBroadcast(
+                context,
+                PI_WATCHDOG,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val interval = if (isBatteryUnrestricted(context)) WATCHDOG_FAST_MS else WATCHDOG_SLOW_MS
+            // Cancel stale inexact repeating from older builds.
+            am.cancel(pi)
+            val exact = canExactAlarms(am)
+            setWakeupAlarm(am, SystemClock.elapsedRealtime() + interval, pi)
+            Log.i(TAG, "keepalive armed intervalMs=$interval exact=$exact")
+        }
+
+        /** One-shot restart after the service was killed or the sync loop ended. */
+        @JvmStatic
+        fun scheduleRestart(context: Context, delayMs: Long) {
+            if (!hasCredentials(context)) return
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val intent = Intent(context, ListenerWatchdogReceiver::class.java).apply {
+                action = ListenerWatchdogReceiver.ACTION_RESTART
+            }
+            val pi = PendingIntent.getBroadcast(
+                context,
+                PI_RESTART,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val at = SystemClock.elapsedRealtime() + delayMs.coerceAtLeast(1_000L)
+            setWakeupAlarm(am, at, pi)
+            Log.i(TAG, "restart armed delayMs=$delayMs exact=${canExactAlarms(am)}")
+        }
+
+        @JvmStatic
+        fun cancelKeepAlive(context: Context) {
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val watchdog = PendingIntent.getBroadcast(
+                context,
+                PI_WATCHDOG,
+                Intent(context, ListenerWatchdogReceiver::class.java).apply {
+                    action = ListenerWatchdogReceiver.ACTION_WATCHDOG
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val restart = PendingIntent.getBroadcast(
+                context,
+                PI_RESTART,
+                Intent(context, ListenerWatchdogReceiver::class.java).apply {
+                    action = ListenerWatchdogReceiver.ACTION_RESTART
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            am.cancel(watchdog)
+            am.cancel(restart)
+        }
 
         /** Same hashing scheme as JS `notificationIdForRoom` so clear-on-read hits both paths. */
         fun notificationIdForRoom(roomId: String): Int {
@@ -730,11 +1083,7 @@ class MatrixSyncService : Service() {
         fun notificationIdForGroupSummary(groupId: String): Int =
             notificationIdForRoom("summary:$groupId")
 
-        private fun channelIdForKindStatic(kind: String): String = when (kind) {
-            "direct" -> CHANNEL_DIRECTS
-            "space" -> CHANNEL_SPACES
-            else -> CHANNEL_HOME
-        }
+        private fun channelIdForKindStatic(kind: String): String = CHANNEL_POPUP
 
         fun ensureMessageChannels(context: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -745,20 +1094,24 @@ class MatrixSyncService : Service() {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
 
-            val channels = listOf(
-                Triple(CHANNEL_DIRECTS, "Direct messages", "One-to-one Matrix conversations"),
-                Triple(CHANNEL_SPACES, "Spaces", "Messages from rooms inside Spaces"),
-                Triple(CHANNEL_HOME, "Other rooms", "Rooms that are not in a Space"),
-                Triple(CHANNEL_MESSAGES, "Messages", "Legacy message channel"),
-            )
+            nm.deleteNotificationChannel("paarrot_popup")
 
-            for ((id, name, description) in channels) {
-                val channel = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH).apply {
-                    this.description = description
-                    setSound(soundUri, soundAttrs)
-                }
-                nm.createNotificationChannel(channel)
+            val popup = NotificationChannel(
+                CHANNEL_POPUP,
+                "Priority message alerts",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "High-priority heads-up when a message arrives"
+                setSound(soundUri, soundAttrs)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 120, 250)
+                enableLights(true)
+                lightColor = 0xFFFF8A00.toInt()
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setShowBadge(true)
+                setBypassDnd(false)
             }
+            nm.createNotificationChannel(popup)
         }
 
         fun decodeBase64Bitmap(base64: String?): Bitmap? {
@@ -988,154 +1341,188 @@ class MatrixSyncService : Service() {
             title: String? = null,
             body: String? = null,
         ) {
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            ensureMessageChannels(context)
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                ensureMessageChannels(context)
 
-            val resolvedSender = senderName.ifBlank { title ?: "Someone" }
-            val resolvedMessage = sanitizeNotificationText(
-                messageText.ifBlank { body ?: "New message" },
-            )
-            val isDm = kind == "direct"
-            val resolvedConversation =
-                conversationTitle?.takeIf { it.isNotBlank() }
-                    ?: title?.takeIf { !isDm && it != resolvedSender }
+                val resolvedSender = senderName.ifBlank { title ?: "Someone" }
+                val resolvedMessage = sanitizeNotificationText(
+                    messageText.ifBlank { body ?: "New message" },
+                )
+                val isDm = kind == "direct"
+                val resolvedConversation =
+                    conversationTitle?.takeIf { it.isNotBlank() }
+                        ?: title?.takeIf { !isDm && it != resolvedSender }
 
-            val launchIntent = Intent(context, MainActivity::class.java).apply {
-                action = NotificationNavStore.ACTION_OPEN_NOTIFICATION
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
-                putExtra(EXTRA_ROOM_ID, roomId)
-                if (!path.isNullOrBlank()) {
-                    putExtra(NotificationNavStore.EXTRA_NAV_PATH, path)
+                val launchIntent = Intent(context, MainActivity::class.java).apply {
+                    action = NotificationNavStore.ACTION_OPEN_NOTIFICATION
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    putExtra(EXTRA_ROOM_ID, roomId)
+                    if (!path.isNullOrBlank()) {
+                        putExtra(NotificationNavStore.EXTRA_NAV_PATH, path)
+                    }
                 }
-            }
-            val roomNotifId = notificationIdForRoom(roomId)
-            val pi = PendingIntent.getActivity(
-                context, roomNotifId, launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
+                val roomNotifId = notificationIdForRoom(roomId)
+                val pi = PendingIntent.getActivity(
+                    context, roomNotifId, launchIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                )
 
-            val avatar = largeIcon?.let { toCircularBitmap(it) }
-            val personBuilder = Person.Builder()
-                .setName(resolvedSender)
-                .setKey("$roomId:$resolvedSender")
-                .setImportant(true)
-            if (avatar != null) {
-                personBuilder.setIcon(IconCompat.createWithBitmap(avatar))
-            }
-            val senderPerson = personBuilder.build()
-
-            val imageUri = inlineImage?.let { persistNotificationImage(context, it) }?.toString()
-            val history = appendMessageHistory(
-                context,
-                roomId,
-                resolvedSender,
-                resolvedMessage,
-                imageUri,
-            )
-
-            val channelId = channelIdForKindStatic(kind)
-            val collapsedTitle = if (isDm || resolvedConversation.isNullOrBlank()) {
-                resolvedSender
-            } else {
-                resolvedConversation
-            }
-            val collapsedText = if (isDm || resolvedConversation.isNullOrBlank()) {
-                resolvedMessage
-            } else {
-                "$resolvedSender: $resolvedMessage"
-            }
-
-            val shortcut = publishConversationShortcut(
-                context,
-                roomId,
-                collapsedTitle,
-                senderPerson,
-                launchIntent,
-            )
-
-            val selfPerson = Person.Builder()
-                .setName("Me")
-                .setKey("self")
-                .build()
-            val messagingStyle = NotificationCompat.MessagingStyle(selfPerson)
-                .setGroupConversation(!isDm)
-            if (!isDm && !resolvedConversation.isNullOrBlank()) {
-                messagingStyle.conversationTitle = resolvedConversation
-            }
-            for (msg in history) {
-                val person = if (msg.sender == resolvedSender) {
-                    senderPerson
+                val collapsedTitle = if (isDm || resolvedConversation.isNullOrBlank()) {
+                    resolvedSender
                 } else {
-                    Person.Builder()
-                        .setName(msg.sender)
-                        .setKey("$roomId:${msg.sender}")
-                        .setImportant(true)
-                        .build()
+                    resolvedConversation
                 }
-                val line = NotificationCompat.MessagingStyle.Message(
-                    msg.text,
-                    msg.timestamp,
-                    person,
-                )
-                // Attach image on the message itself so multi-message history keeps thumbnails
-                // (BigPictureStyle replaces MessagingStyle and culls prior lines).
-                if (!msg.imageUri.isNullOrBlank()) {
-                    line.setData("image/jpeg", Uri.parse(msg.imageUri))
+                val collapsedText = if (isDm || resolvedConversation.isNullOrBlank()) {
+                    resolvedMessage
+                } else {
+                    "$resolvedSender: $resolvedMessage"
                 }
-                messagingStyle.addMessage(line)
-            }
 
-            val builder = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(R.drawable.ic_stat_paarrot)
-                .setContentTitle(collapsedTitle)
-                .setContentText(collapsedText)
-                .setAutoCancel(true)
-                .setContentIntent(pi)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setGroup(groupId)
-                .setOnlyAlertOnce(true)
-                .setNumber(history.size)
-                .setSubText(groupName)
-                .setShortcutId(shortcut.id)
-                .setShortcutInfo(shortcut)
-                // Prevent system "Open link in Chrome/Firefox" contextual actions on URL bodies.
-                .setAllowSystemGeneratedContextualActions(false)
-                .setStyle(messagingStyle)
+                val avatar = largeIcon?.let { toCircularBitmap(it) }
+                val channelId = channelIdForKindStatic(kind)
 
-            builder.extras.putString(EXTRA_ROOM_ID, roomId)
-            builder.extras.putString(EXTRA_GROUP_ID, groupId)
-            if (!path.isNullOrBlank()) {
-                builder.extras.putString(NotificationNavStore.EXTRA_NAV_PATH, path)
-            }
+                val personBuilder = Person.Builder()
+                    .setName(resolvedSender)
+                    .setKey("$roomId:$resolvedSender")
+                    .setImportant(true)
+                if (avatar != null) {
+                    personBuilder.setIcon(IconCompat.createWithBitmap(avatar))
+                }
+                val senderPerson = personBuilder.build()
 
-            // Collapsed shade avatar (large icon). Small icon must stay the monochrome app mark.
-            if (avatar != null) builder.setLargeIcon(avatar)
-
-            nm.notify(roomNotifId, builder.build())
-
-            val summaryId = notificationIdForGroupSummary(groupId)
-            val summary = NotificationCompat.Builder(context, channelId)
-                .setSmallIcon(R.drawable.ic_stat_paarrot)
-                .setContentTitle(groupName)
-                .setContentText("New messages")
-                .setAutoCancel(true)
-                .setContentIntent(pi)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setGroup(groupId)
-                .setGroupSummary(true)
-                .setAllowSystemGeneratedContextualActions(false)
-                .setStyle(
-                    NotificationCompat.InboxStyle()
-                        .setBigContentTitle(groupName)
-                        .setSummaryText(groupName)
+                val imageUri = inlineImage?.let { persistNotificationImage(context, it) }?.toString()
+                val history = appendMessageHistory(
+                    context,
+                    roomId,
+                    resolvedSender,
+                    resolvedMessage,
+                    imageUri,
                 )
-            summary.extras.putString(EXTRA_GROUP_ID, groupId)
-            nm.notify(summaryId, summary.build())
+
+                val shortcut = publishConversationShortcut(
+                    context,
+                    roomId,
+                    collapsedTitle,
+                    senderPerson,
+                    launchIntent,
+                )
+
+                val selfPerson = Person.Builder()
+                    .setName("Me")
+                    .setKey("self")
+                    .build()
+                val messagingStyle = NotificationCompat.MessagingStyle(selfPerson)
+                    .setGroupConversation(!isDm)
+                if (!isDm && !resolvedConversation.isNullOrBlank()) {
+                    messagingStyle.conversationTitle = resolvedConversation
+                }
+                for (msg in history) {
+                    val person = if (msg.sender == resolvedSender) {
+                        senderPerson
+                    } else {
+                        Person.Builder()
+                            .setName(msg.sender)
+                            .setKey("$roomId:${msg.sender}")
+                            .setImportant(true)
+                            .build()
+                    }
+                    val line = NotificationCompat.MessagingStyle.Message(
+                        msg.text,
+                        msg.timestamp,
+                        person,
+                    )
+                    // Attach image on the message itself so multi-message history keeps thumbnails
+                    // (BigPictureStyle replaces MessagingStyle and culls prior lines).
+                    if (!msg.imageUri.isNullOrBlank()) {
+                        line.setData("image/jpeg", Uri.parse(msg.imageUri))
+                    }
+                    messagingStyle.addMessage(line)
+                }
+
+                val builder = NotificationCompat.Builder(context, channelId)
+                    .setSmallIcon(R.drawable.ic_stat_paarrot)
+                    .setContentTitle(collapsedTitle)
+                    .setContentText(collapsedText)
+                    .setAutoCancel(true)
+                    .setContentIntent(pi)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setOnlyAlertOnce(false)
+                    .setDefaults(NotificationCompat.DEFAULT_ALL)
+                    .setVibrate(longArrayOf(0, 250, 120, 250))
+                    .setLights(0xFFFF8A00.toInt(), 600, 800)
+                    .setTicker(collapsedText)
+                    .setWhen(System.currentTimeMillis())
+                    .setShowWhen(true)
+                    .setGroup(groupId)
+                    .setNumber(history.size)
+                    .setSubText(groupName)
+                    .setShortcutId(shortcut.id)
+                    .setShortcutInfo(shortcut)
+                    .setAllowSystemGeneratedContextualActions(false)
+                    .setStyle(messagingStyle)
+
+                builder.extras.putString(EXTRA_ROOM_ID, roomId)
+                builder.extras.putString(EXTRA_GROUP_ID, groupId)
+                if (!path.isNullOrBlank()) {
+                    builder.extras.putString(NotificationNavStore.EXTRA_NAV_PATH, path)
+                }
+
+                // Collapsed shade avatar (large icon). Small icon must stay the monochrome app mark.
+                if (avatar != null) builder.setLargeIcon(avatar)
+
+                // Wake the lock screen only — do not launch the app.
+                wakeScreenForAlert(context)
+                nm.notify(roomNotifId, builder.build())
+
+                val summaryId = notificationIdForGroupSummary(groupId)
+                val summary = NotificationCompat.Builder(context, channelId)
+                    .setSmallIcon(R.drawable.ic_stat_paarrot)
+                    .setContentTitle(groupName)
+                    .setContentText("New messages")
+                    .setAutoCancel(true)
+                    .setContentIntent(pi)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setGroup(groupId)
+                    .setGroupSummary(true)
+                    .setAllowSystemGeneratedContextualActions(false)
+                    .setStyle(
+                        NotificationCompat.InboxStyle()
+                            .setBigContentTitle(groupName)
+                            .setSummaryText(groupName),
+                    )
+                summary.extras.putString(EXTRA_GROUP_ID, groupId)
+                nm.notify(summaryId, summary.build())
+
+                Log.i(TAG, "posted alert id=$roomNotifId title=$collapsedTitle history=${history.size}")
+            } catch (e: Exception) {
+                Log.e(TAG, "postMessageNotification failed: ${e.message}", e)
+            }
+        }
+
+        /** Briefly light the lock screen so the heads-up can appear. Never starts an Activity. */
+        private fun wakeScreenForAlert(context: Context) {
+            try {
+                val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (pm.isInteractive) return
+                @Suppress("DEPRECATION")
+                val lock = pm.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                        PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                        PowerManager.ON_AFTER_RELEASE,
+                    "Paarrot:message-alert",
+                )
+                lock.setReferenceCounted(false)
+                lock.acquire(3_000L)
+            } catch (e: Exception) {
+                Log.w(TAG, "wakeScreenForAlert failed: ${e.message}")
+            }
         }
 
         /** Cancel the tray notification posted for [roomId], if any. */
@@ -1176,29 +1563,39 @@ class MatrixSyncService : Service() {
             }
         }
 
-        /** Set by [SyncServicePlugin] / [MainActivity] — true when the Capacitor UI is visible. */
-        @JvmField
-        @Volatile
-        var appInForeground = false
+        /** In-process listener state; cross-process health uses the persisted heartbeat. */
+        private val listenerAlive = AtomicBoolean(false)
+
+        @JvmStatic
+        fun isListenerRunning(): Boolean = listenerAlive.get()
 
         /**
          * Starts a one-shot sync fetch if credentials are available and the call is not rate-limited.
          */
+        @JvmStatic
         fun requestSyncFetch(context: Context, reason: String) {
             val credsPrefs = context.getSharedPreferences(SyncServicePlugin.PREFS, Context.MODE_PRIVATE)
-            val homeserver = credsPrefs.getString(EXTRA_HOMESERVER, null) ?: return
-            val token = credsPrefs.getString(EXTRA_TOKEN, null) ?: return
+            val homeserver = credsPrefs.getString(EXTRA_HOMESERVER, null) ?: run {
+                Log.w(TAG, "requestSyncFetch($reason): no homeserver saved")
+                return
+            }
+            val token = credsPrefs.getString(EXTRA_TOKEN, null) ?: run {
+                Log.w(TAG, "requestSyncFetch($reason): no token saved")
+                return
+            }
             val userId = credsPrefs.getString(EXTRA_USER_ID, null) ?: ""
             val deviceId = credsPrefs.getString(EXTRA_DEVICE_ID, null) ?: ""
 
-            val syncPrefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val now = System.currentTimeMillis()
-            val lastWake = syncPrefs.getLong(KEY_LAST_WAKE_MS, 0L)
-            if (now - lastWake < MIN_WAKE_INTERVAL_MS) {
-                Log.d(TAG, "Skipping wake: rate-limited ($reason)")
-                return
+            if (Build.VERSION.SDK_INT >= 33) {
+                val allowed = ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.POST_NOTIFICATIONS,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!allowed) {
+                    Log.w(TAG, "requestSyncFetch($reason): POST_NOTIFICATIONS denied")
+                    return
+                }
             }
-            syncPrefs.edit().putLong(KEY_LAST_WAKE_MS, now).apply()
 
             val intent = Intent(context, MatrixSyncService::class.java).apply {
                 putExtra(EXTRA_HOMESERVER, homeserver)
@@ -1208,10 +1605,17 @@ class MatrixSyncService : Service() {
                 putExtra(EXTRA_TRIGGER_REASON, reason)
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                Log.i(TAG, "requestSyncFetch($reason): started healthy=${isListenerHealthy(context)} ageMs=${heartbeatAgeMs(context)}")
+            } catch (e: Exception) {
+                Log.e(TAG, "requestSyncFetch($reason) failed: ${e.message}", e)
+                scheduleKeepAlive(context)
+                scheduleRestart(context, 60_000L)
             }
         }
     }

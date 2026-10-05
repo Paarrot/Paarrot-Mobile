@@ -724,7 +724,7 @@ function MessageNotifications() {
 }
 
 /**
- * Configures native Android push-ping background sync on login, keeps it
+ * Configures the native Android message listener on login, keeps it
  * informed of foreground state so it doesn't double-fire notifications,
  * and clears it cleanly on unmount (logout).
  * Only active on Android Capacitor builds.
@@ -741,15 +741,25 @@ function BackgroundSyncSetup() {
 
   useEffect(() => {
     console.log('BackgroundSyncSetup: Starting background sync for', mx.getUserId());
-    startBackgroundSync(mx);
+    void startBackgroundSync(mx).catch((err) => {
+      console.error('[BackgroundSyncSetup] Failed to start message listener:', err);
+    });
 
-    const onVisibility = () => setAppForegroundState(!document.hidden);
+    const onVisibility = () => {
+      void setAppForegroundState(!document.hidden).catch((err) => {
+        console.error('[BackgroundSyncSetup] Failed to update foreground state:', err);
+      });
+    };
     document.addEventListener('visibilitychange', onVisibility);
-    setAppForegroundState(!document.hidden);
+    void setAppForegroundState(!document.hidden).catch((err) => {
+      console.error('[BackgroundSyncSetup] Failed to set initial foreground state:', err);
+    });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      stopBackgroundSync();
+      void stopBackgroundSync().catch((err) => {
+        console.error('[BackgroundSyncSetup] Failed to stop message listener:', err);
+      });
     };
   }, [mx]);
 
