@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { MatrixClient } from 'matrix-js-sdk';
+import * as lucide from 'lucide-react';
 import { Plugin, createPluginContext } from '@paarrot/plugin-manager';
 import { pluginMarketplaceManager, pluginRegistry } from './PluginAPI';
 import { sendNotification } from '../../../utils/tauri';
@@ -80,6 +81,7 @@ export function PluginLoader({ matrixClient, children }: PluginLoaderProps) {
                   matrixClient.off(eventType as any, handler as any),
               },
               React,
+              lucide,
             });
 
             console.log('[PluginLoader] compatContext.React:', !!compatContext.React);

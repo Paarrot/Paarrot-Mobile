@@ -33,7 +33,8 @@ if (cinnyStatus.trim()) {
   // Ensure android/ junction is excluded from the cinny git view — otherwise
   // `git stash -u` would traverse the junction into the root android/ directory
   // and delete files there when the stash is created.
-  const cinnyExclude = join(CINNY, '.git', 'info', 'exclude');
+  const gitDir = resolve(CINNY, execSync('git rev-parse --git-dir', { cwd: CINNY, encoding: 'utf8' }).trim());
+  const cinnyExclude = join(gitDir, 'info', 'exclude');
   const excludeContent = existsSync(cinnyExclude) ? readFileSync(cinnyExclude, 'utf8') : '';
   if (!excludeContent.includes('android/')) {
     writeFileSync(cinnyExclude, excludeContent + (excludeContent.endsWith('\n') || !excludeContent ? '' : '\n') + 'android/\n', 'utf8');
