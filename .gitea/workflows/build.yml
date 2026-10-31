@@ -46,7 +46,13 @@ jobs:
           grep '"version"' package.json | head -1
           
           echo "VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "SHOULD_BUILD=true" >> $GITHUB_OUTPUT
+
+          # [skip build] runs the checks workflow but skips the mobile build.
+          if echo "${{ github.event.head_commit.message }}" | grep -qi '\[skip build\]'; then
+            echo "SHOULD_BUILD=false" >> $GITHUB_OUTPUT
+          else
+            echo "SHOULD_BUILD=true" >> $GITHUB_OUTPUT
+          fi
       
       - name: Commit and push version bump
         run: |
