@@ -1,6 +1,6 @@
 {
   "name": "paarrot",
-  "version": "4.11.227",
+  "version": "4.11.228",
   "description": "Paarrot - A Matrix client based on Cinny",
   "engines": {
     "node": ">=18.0.0"
