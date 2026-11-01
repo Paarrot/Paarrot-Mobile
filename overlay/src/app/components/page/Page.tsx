@@ -22,7 +22,10 @@ export function PageRoot({ nav, children }: PageRootProps) {
   // Master list routes: only the channel/space list is interactive.
   // Never mount the detail/underlay stack here — an empty detail layer would
   // sit above the list with pointer-events and freeze taps (DM → space bug).
-  if (compact && showCompactMaster) {
+  // When nav is empty there is no master list to protect, so fall through to the
+  // detail branch. Settings is a modal, not a route: opening it from /home keeps
+  // the pathname a list route while Settings passes nav as undefined on mobile.
+  if (compact && showCompactMaster && nav) {
     return (
       <Box grow="Yes" className={ContainerColor({ variant: 'Background' })}>
         {nav}
